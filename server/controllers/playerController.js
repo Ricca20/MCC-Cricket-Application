@@ -43,6 +43,28 @@ const getPlayerById = async (req, res) => {
   }
 };
 
+// @desc    Get player stat trends for charts (Phase 3)
+// @route   GET /api/players/:id/trends
+// @access  Public or Protected
+const getPlayerTrends = async (req, res) => {
+  try {
+    const player = await User.findById(req.params.id);
+    if (!player) return res.status(404).json({ message: 'Player not found' });
+
+    // In a real implementation, you would aggregate data from all Innings where this player batted or bowled
+    // grouping by match date to generate a chronological array for Recharts
+    const mockTrends = [
+      { date: '2023-01-01', runs: 20, wickets: 1 },
+      { date: '2023-02-01', runs: 55, wickets: 0 },
+      { date: '2023-03-01', runs: 12, wickets: 3 }
+    ];
+
+    res.json(mockTrends);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
 // @desc    Update player role (e.g. admin grants scorer role)
 // @route   PATCH /api/players/:id/role
 // @access  Admin Only
@@ -69,5 +91,6 @@ const updatePlayerRole = async (req, res) => {
 module.exports = {
   getPlayers,
   getPlayerById,
+  getPlayerTrends,
   updatePlayerRole
 };

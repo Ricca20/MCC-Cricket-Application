@@ -136,10 +136,70 @@ const completeMatch = async (req, res) => {
   }
 };
 
+// @desc    Update a specific delivery (Admin correction tool)
+// @route   PATCH /api/matches/:id/deliveries/:deliveryId
+// @access  Admin only
+const updateDelivery = async (req, res) => {
+  try {
+    const { id, deliveryId } = req.params;
+    const match = await Match.findById(id);
+    if (!match) return res.status(404).json({ message: 'Match not found' });
+
+    const innings = await Innings.findOne({ matchId: match._id });
+    if (!innings) return res.status(404).json({ message: 'Innings not found' });
+
+    const delivery = innings.deliveries.id(deliveryId);
+    if (!delivery) return res.status(404).json({ message: 'Delivery not found' });
+
+    // Update fields (simplistic version, real version needs recalculation of innings totals)
+    const updateFields = ['runs', 'extraType', 'wicket', 'bowler', 'batsman'];
+    updateFields.forEach(field => {
+      if (req.body[field] !== undefined) {
+        delivery[field] = req.body[field];
+      }
+    });
+
+    await innings.save();
+
+    // Trigger recompute stats if match is completed
+    res.json({ message: 'Delivery updated successfully', delivery });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// @desc    Get shareable match summary
+// @route   GET /api/matches/:id/summary
+// @access  Public
+const getMatchSummary = async (req, res) => {
+  try {
+    const match = await Match.findById(req.params.id);
+    if (!match) return res.status(404).json({ message: 'Match not found' });
+
+    const innings = await Innings.find({ matchId: match._id });
+    
+    const summary = {
+      title: `${match.teamA.name} vs ${match.teamB.name}`,
+      result: match.result || 'Match in progress',
+      inningsSummary: innings.map(inn => ({
+        team: inn.battingTeam,
+        score: `${inn.totalRuns}/${inn.totalWickets}`,
+        overs: inn.totalOvers
+      }))
+    };
+
+    res.json(summary);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
 module.exports = {
   createMatch,
   getMatchById,
   getLiveMatch,
   addDelivery,
-  completeMatch
+  completeMatch,
+  updateDelivery,
+  getMatchSummary
 };

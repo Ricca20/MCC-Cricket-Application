@@ -12,6 +12,7 @@ const userSchema = new mongoose.Schema({
   battingStyle: { type: String },
   bowlingStyle: { type: String },
   profilePhoto: { type: String },
+  pushSubscriptions: { type: Array, default: [] },
   joinedDate: { type: Date, default: Date.now },
   createdAt: { type: Date, default: Date.now }
 });
