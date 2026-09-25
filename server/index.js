@@ -51,7 +51,7 @@ app.use('/api/auth', require('./routes/auth'));
 app.use('/api/players', require('./routes/players'));
 app.use('/api/matches', require('./routes/matches'));
 app.use('/api/teams', require('./routes/teams'));
-// app.use('/api/tournaments', require('./routes/tournaments'));
+app.use('/api/tournaments', require('./routes/tournaments'));
 
 // Connect to MongoDB and start server
 const PORT = process.env.PORT || 5000;
