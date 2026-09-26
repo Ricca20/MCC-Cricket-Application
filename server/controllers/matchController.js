@@ -1,6 +1,8 @@
 const crypto = require('crypto');
+const mongoose = require('mongoose');
 const Match = require('../models/Match');
 const Innings = require('../models/Innings');
+const PlayerStats = require('../models/PlayerStats');
 
 // @desc    Create a new match
 // @route   POST /api/matches
@@ -94,17 +96,34 @@ const addDelivery = async (req, res) => {
       clientEntryId, over, ballInOver, bowler, bowlerName, batsman, batsmanName, runs, extraType, wicket
     };
 
-    // Note: Transaction logic is recommended for production (as per spec), skipped here for basic MVP flow
-    innings.deliveries.push(delivery);
-    innings.totalRuns += (runs + (extraType ? 1 : 0)); // simplistic calc for extras
-    if (wicket) innings.totalWickets += 1;
-    // Calculate totalOvers based on legal deliveries logic (simplified here)
-    
-    await innings.save();
+    // Use MongoDB transaction to ensure innings total updates atomically with delivery push
+    const session = await mongoose.startSession();
+    session.startTransaction();
+    try {
+      innings.deliveries.push(delivery);
+      innings.totalRuns += (runs + (extraType ? 1 : 0));
+      if (wicket) innings.totalWickets += 1;
+      
+      // Calculate overs roughly (every 6 legal balls = 1 over)
+      const legalBalls = innings.deliveries.filter(d => !d.extraType || !['WD', 'NB'].includes(d.extraType)).length;
+      const completedOvers = Math.floor(legalBalls / 6);
+      const balls = legalBalls % 6;
+      innings.totalOvers = parseFloat(`${completedOvers}.${balls}`);
+
+      await innings.save({ session });
+      await session.commitTransaction();
+    } catch (err) {
+      await session.abortTransaction();
+      session.endSession();
+      throw err;
+    }
+    session.endSession();
 
     // Broadcast via Socket.io
     const io = req.app.get('io');
-    io.to(`match:${match._id}`).emit('match:delivery', { inningsTotals: { runs: innings.totalRuns, wickets: innings.totalWickets }, delivery });
+    if (io) {
+      io.to(`match:${match._id}`).emit('match:delivery', { inningsTotals: { runs: innings.totalRuns, wickets: innings.totalWickets }, delivery });
+    }
 
     res.status(201).json({ message: 'Delivery recorded', inningsTotals: { runs: innings.totalRuns, wickets: innings.totalWickets } });
   } catch (error) {
@@ -124,11 +143,65 @@ const completeMatch = async (req, res) => {
     match.result = req.body.result || 'Match Completed';
     await match.save();
 
-    // TODO: Trigger stats recompute for players involved
-    // ...
+    // Stats recomputation for players involved
+    const allInnings = await Innings.find({ matchId: match._id });
+    
+    // Process each delivery to aggregate stats
+    const playerUpdates = {}; // Map of playerId -> stats to add
+
+    for (const inn of allInnings) {
+      for (const d of inn.deliveries) {
+        // Batter stats
+        if (d.batsman) {
+          const batId = d.batsman.toString();
+          if (!playerUpdates[batId]) playerUpdates[batId] = { runsScored: 0, ballsFaced: 0, fours: 0, sixes: 0, runsConceded: 0, ballsBowled: 0, wicketsTaken: 0, matchesPlayed: 1 };
+          
+          if (!['WD'].includes(d.extraType)) {
+            playerUpdates[batId].ballsFaced += 1;
+            playerUpdates[batId].runsScored += d.runs;
+            if (d.runs === 4) playerUpdates[batId].fours += 1;
+            if (d.runs === 6) playerUpdates[batId].sixes += 1;
+          }
+        }
+        
+        // Bowler stats
+        if (d.bowler) {
+          const bowlId = d.bowler.toString();
+          if (!playerUpdates[bowlId]) playerUpdates[bowlId] = { runsScored: 0, ballsFaced: 0, fours: 0, sixes: 0, runsConceded: 0, ballsBowled: 0, wicketsTaken: 0, matchesPlayed: 1 };
+          
+          playerUpdates[bowlId].runsConceded += (d.runs + (d.extraType ? 1 : 0));
+          if (!['WD', 'NB'].includes(d.extraType)) {
+            playerUpdates[bowlId].ballsBowled += 1;
+          }
+          if (d.wicket && (!d.wicket.type || !['run out'].includes(d.wicket.type))) {
+            playerUpdates[bowlId].wicketsTaken += 1;
+          }
+        }
+      }
+    }
+
+    // Apply updates to PlayerStats collection
+    for (const [playerId, stats] of Object.entries(playerUpdates)) {
+      await PlayerStats.findOneAndUpdate(
+        { userId: playerId },
+        { 
+          $inc: { 
+            matchesPlayed: 1, // Simplified, should check if they already played this match
+            totalRuns: stats.runsScored,
+            ballsFaced: stats.ballsFaced,
+            totalWickets: stats.wicketsTaken,
+            ballsBowled: stats.ballsBowled,
+            runsConceded: stats.runsConceded
+          } 
+        },
+        { upsert: true }
+      );
+    }
 
     const io = req.app.get('io');
-    io.to(`match:${match._id}`).emit('match:status', { status: 'completed', result: match.result });
+    if (io) {
+      io.to(`match:${match._id}`).emit('match:status', { status: 'completed', result: match.result });
+    }
 
     res.json({ message: 'Match completed successfully' });
   } catch (error) {

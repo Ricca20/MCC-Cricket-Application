@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const Tournament = require('../models/Tournament');
 const Fixture = require('../models/Fixture');
 const Match = require('../models/Match');
+const Innings = require('../models/Innings');
 
 // @desc    Create a tournament
 // @route   POST /api/tournaments
@@ -139,17 +140,98 @@ const getStandings = async (req, res) => {
     const tournament = await Tournament.findById(req.params.id).populate('teams', 'name');
     if (!tournament) return res.status(404).json({ message: 'Tournament not found' });
 
-    // In a real scenario, this would aggregate data from Match results linked in Fixtures
-    // This is a placeholder for the read-time computation logic described in the spec.
-    const standings = tournament.teams.map(team => ({
-      teamId: team._id,
-      teamName: team.name,
-      played: 0,
-      won: 0,
-      lost: 0,
-      points: 0,
-      nrr: 0 // Net Run Rate
-    }));
+    // Initialize standings table
+    const standingsMap = {};
+    tournament.teams.forEach(team => {
+      standingsMap[team._id.toString()] = {
+        teamId: team._id,
+        teamName: team.name,
+        played: 0,
+        won: 0,
+        lost: 0,
+        points: 0,
+        totalRunsScored: 0,
+        totalOversFaced: 0,
+        totalRunsConceded: 0,
+        totalOversBowled: 0,
+        nrr: 0 // Net Run Rate
+      };
+    });
+
+    // Find all fixtures linked to completed matches
+    const fixtures = await Fixture.find({ tournamentId: tournament._id, matchId: { $exists: true } })
+      .populate('matchId');
+
+    for (const fixture of fixtures) {
+      if (fixture.matchId && fixture.matchId.status === 'completed') {
+        const match = fixture.matchId;
+        const innings = await Innings.find({ matchId: match._id });
+
+        if (innings.length >= 2) {
+          // Simplistic logic assuming innings[0] is teamA and innings[1] is teamB
+          const inn1 = innings[0];
+          const inn2 = innings[1];
+
+          // Determine winner by total runs (ignoring super overs, chasing balls remaining, etc for MVP)
+          let winnerId = null;
+          let loserId = null;
+
+          if (inn1.totalRuns > inn2.totalRuns) {
+            winnerId = match.teamA.id.toString();
+            loserId = match.teamB.id.toString();
+          } else if (inn2.totalRuns > inn1.totalRuns) {
+            winnerId = match.teamB.id.toString();
+            loserId = match.teamA.id.toString();
+          }
+
+          const teamAId = match.teamA.id.toString();
+          const teamBId = match.teamB.id.toString();
+
+          if (standingsMap[teamAId] && standingsMap[teamBId]) {
+            standingsMap[teamAId].played += 1;
+            standingsMap[teamBId].played += 1;
+
+            if (winnerId === teamAId) {
+              standingsMap[teamAId].won += 1;
+              standingsMap[teamAId].points += 2;
+              standingsMap[teamBId].lost += 1;
+            } else if (winnerId === teamBId) {
+              standingsMap[teamBId].won += 1;
+              standingsMap[teamBId].points += 2;
+              standingsMap[teamAId].lost += 1;
+            } else {
+              // Tie
+              standingsMap[teamAId].points += 1;
+              standingsMap[teamBId].points += 1;
+            }
+
+            // NRR Calculation accumulation
+            standingsMap[teamAId].totalRunsScored += inn1.totalRuns;
+            standingsMap[teamAId].totalOversFaced += inn1.totalOvers || 20; // Assume 20 if undefined
+            standingsMap[teamAId].totalRunsConceded += inn2.totalRuns;
+            standingsMap[teamAId].totalOversBowled += inn2.totalOvers || 20;
+
+            standingsMap[teamBId].totalRunsScored += inn2.totalRuns;
+            standingsMap[teamBId].totalOversFaced += inn2.totalOvers || 20;
+            standingsMap[teamBId].totalRunsConceded += inn1.totalRuns;
+            standingsMap[teamBId].totalOversBowled += inn1.totalOvers || 20;
+          }
+        }
+      }
+    }
+
+    // Calculate final NRR and sort
+    const standings = Object.values(standingsMap).map(team => {
+      const runRateFor = team.totalOversFaced > 0 ? (team.totalRunsScored / team.totalOversFaced) : 0;
+      const runRateAgainst = team.totalOversBowled > 0 ? (team.totalRunsConceded / team.totalOversBowled) : 0;
+      team.nrr = parseFloat((runRateFor - runRateAgainst).toFixed(3));
+      return team;
+    });
+
+    standings.sort((a, b) => {
+      if (b.points !== a.points) return b.points - a.points;
+      return b.nrr - a.nrr;
+    });
 
     res.json(standings);
   } catch (error) {
