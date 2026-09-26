@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { io, Socket } from 'socket.io-client';
-import { Activity, Trophy } from 'lucide-react';
+import { Activity, Trophy, Bell, BellRing } from 'lucide-react';
 import api from '@/lib/api';
 
 interface LiveTotals {
@@ -20,6 +20,37 @@ export default function LiveSpectatorView() {
   const [matchData, setMatchData] = useState<any>(null);
   const [totals, setTotals] = useState<LiveTotals>({ runs: 0, wickets: 0, overs: 0 });
   const [status, setStatus] = useState<string>('Live');
+  const [isSubscribed, setIsSubscribed] = useState(false);
+
+  // Helper to convert VAPID public key
+  const urlBase64ToUint8Array = (base64String: string) => {
+    const padding = '='.repeat((4 - base64String.length % 4) % 4);
+    const base64 = (base64String + padding).replace(/\-/g, '+').replace(/_/g, '/');
+    const rawData = window.atob(base64);
+    const outputArray = new Uint8Array(rawData.length);
+    for (let i = 0; i < rawData.length; ++i) {
+      outputArray[i] = rawData.charCodeAt(i);
+    }
+    return outputArray;
+  };
+
+  const subscribeToPush = async () => {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const vapidRes = await api.get('/notifications/vapid-public-key');
+      
+      const sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(vapidRes.data)
+      });
+      
+      await api.post('/notifications/subscribe', sub);
+      setIsSubscribed(true);
+    } catch (e) {
+      console.error("Push subscription failed", e);
+    }
+  };
 
   // Initial Fetch & Socket Connection
   useEffect(() => {
@@ -88,6 +119,14 @@ export default function LiveSpectatorView() {
         
         <Trophy className="w-12 h-12 mx-auto text-yellow-400 mb-4 drop-shadow-[0_0_15px_rgba(250,204,21,0.5)]" />
         
+        <button 
+          onClick={subscribeToPush}
+          className="absolute top-4 right-4 p-2 rounded-full bg-white/5 hover:bg-white/10 text-slate-300 transition-colors"
+          title="Get Match Alerts"
+        >
+          {isSubscribed ? <BellRing className="w-5 h-5 text-primary" /> : <Bell className="w-5 h-5" />}
+        </button>
+
         <h1 className="text-3xl font-bold mb-2">
           {matchData.teamA?.name} <span className="text-slate-400 font-medium px-2">vs</span> {matchData.teamB?.name}
         </h1>

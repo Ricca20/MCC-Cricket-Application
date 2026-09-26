@@ -3,6 +3,7 @@ const mongoose = require('mongoose');
 const Match = require('../models/Match');
 const Innings = require('../models/Innings');
 const PlayerStats = require('../models/PlayerStats');
+const { clearStandingsCache } = require('./tournamentController');
 
 // @desc    Create a new match
 // @route   POST /api/matches
@@ -154,7 +155,7 @@ const completeMatch = async (req, res) => {
         // Batter stats
         if (d.batsman) {
           const batId = d.batsman.toString();
-          if (!playerUpdates[batId]) playerUpdates[batId] = { runsScored: 0, ballsFaced: 0, fours: 0, sixes: 0, runsConceded: 0, ballsBowled: 0, wicketsTaken: 0, matchesPlayed: 1 };
+          if (!playerUpdates[batId]) playerUpdates[batId] = { runsScored: 0, ballsFaced: 0, fours: 0, sixes: 0, runsConceded: 0, ballsBowled: 0, wicketsTaken: 0, matchesPlayed: 1, catches: 0, stumpings: 0 };
           
           if (!['WD'].includes(d.extraType)) {
             playerUpdates[batId].ballsFaced += 1;
@@ -167,7 +168,7 @@ const completeMatch = async (req, res) => {
         // Bowler stats
         if (d.bowler) {
           const bowlId = d.bowler.toString();
-          if (!playerUpdates[bowlId]) playerUpdates[bowlId] = { runsScored: 0, ballsFaced: 0, fours: 0, sixes: 0, runsConceded: 0, ballsBowled: 0, wicketsTaken: 0, matchesPlayed: 1 };
+          if (!playerUpdates[bowlId]) playerUpdates[bowlId] = { runsScored: 0, ballsFaced: 0, fours: 0, sixes: 0, runsConceded: 0, ballsBowled: 0, wicketsTaken: 0, matchesPlayed: 1, catches: 0, stumpings: 0 };
           
           playerUpdates[bowlId].runsConceded += (d.runs + (d.extraType ? 1 : 0));
           if (!['WD', 'NB'].includes(d.extraType)) {
@@ -175,6 +176,18 @@ const completeMatch = async (req, res) => {
           }
           if (d.wicket && (!d.wicket.type || !['run out'].includes(d.wicket.type))) {
             playerUpdates[bowlId].wicketsTaken += 1;
+          }
+        }
+
+        // Fielder stats (Catches and Stumpings)
+        if (d.wicket && d.wicket.fielder) {
+          const fielderId = d.wicket.fielder.toString();
+          if (!playerUpdates[fielderId]) playerUpdates[fielderId] = { runsScored: 0, ballsFaced: 0, fours: 0, sixes: 0, runsConceded: 0, ballsBowled: 0, wicketsTaken: 0, matchesPlayed: 1, catches: 0, stumpings: 0 };
+          
+          if (d.wicket.type === 'caught') {
+            playerUpdates[fielderId].catches += 1;
+          } else if (d.wicket.type === 'stumped') {
+            playerUpdates[fielderId].stumpings += 1;
           }
         }
       }
@@ -191,7 +204,9 @@ const completeMatch = async (req, res) => {
             ballsFaced: stats.ballsFaced,
             totalWickets: stats.wicketsTaken,
             ballsBowled: stats.ballsBowled,
-            runsConceded: stats.runsConceded
+            runsConceded: stats.runsConceded,
+            catches: stats.catches,
+            stumpings: stats.stumpings
           } 
         },
         { upsert: true }
@@ -202,6 +217,9 @@ const completeMatch = async (req, res) => {
     if (io) {
       io.to(`match:${match._id}`).emit('match:status', { status: 'completed', result: match.result });
     }
+
+    // Invalidate tournament standings cache since a match just finished
+    clearStandingsCache();
 
     res.json({ message: 'Match completed successfully' });
   } catch (error) {

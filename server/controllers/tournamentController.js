@@ -4,6 +4,10 @@ const Fixture = require('../models/Fixture');
 const Match = require('../models/Match');
 const Innings = require('../models/Innings');
 
+// In-memory cache for Standings (simulating Redis for performance)
+const standingsCache = new Map();
+
+
 // @desc    Create a tournament
 // @route   POST /api/tournaments
 // @access  Admin only
@@ -137,7 +141,17 @@ const getLiveTournament = async (req, res) => {
 // @access  Public
 const getStandings = async (req, res) => {
   try {
-    const tournament = await Tournament.findById(req.params.id).populate('teams', 'name');
+    const tournamentId = req.params.id;
+
+    // Check Cache first
+    if (standingsCache.has(tournamentId)) {
+      console.log(`[Cache Hit] Serving standings for tournament ${tournamentId}`);
+      return res.json(standingsCache.get(tournamentId));
+    }
+
+    console.log(`[Cache Miss] Calculating standings for tournament ${tournamentId}`);
+
+    const tournament = await Tournament.findById(tournamentId).populate('teams', 'name');
     if (!tournament) return res.status(404).json({ message: 'Tournament not found' });
 
     // Initialize standings table
@@ -233,10 +247,20 @@ const getStandings = async (req, res) => {
       return b.nrr - a.nrr;
     });
 
+    // Save to Cache (set to expire after 5 mins or invalidate on match completion)
+    standingsCache.set(tournamentId, standings);
+    setTimeout(() => standingsCache.delete(tournamentId), 5 * 60 * 1000); // 5 min TTL
+
     res.json(standings);
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
+};
+
+// Helper function to expose cache invalidation (to be used by completeMatch if needed)
+const clearStandingsCache = (tournamentId) => {
+  if (tournamentId) standingsCache.delete(tournamentId.toString());
+  else standingsCache.clear();
 };
 
 module.exports = {
@@ -244,5 +268,6 @@ module.exports = {
   addTeamsToTournament,
   generateDraw,
   getLiveTournament,
-  getStandings
+  getStandings,
+  clearStandingsCache
 };
