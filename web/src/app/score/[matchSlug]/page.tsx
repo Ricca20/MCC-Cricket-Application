@@ -1,9 +1,12 @@
 "use client";
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { ChevronLeft, Save, Plus } from 'lucide-react';
+import { ChevronLeft, Save, Activity } from 'lucide-react';
 import { useParams } from 'next/navigation';
+import { db, syncOfflineDeliveries, QueuedDelivery } from '@/lib/db';
+import api from '@/lib/api';
+import { v4 as uuidv4 } from 'uuid'; // we need to generate clientEntryId
 
 export default function MatchScoring() {
   const params = useParams();
@@ -14,9 +17,51 @@ export default function MatchScoring() {
   const [overs, setOvers] = useState(0);
   const [balls, setBalls] = useState(0);
 
-  // Example scoring function
+  const [syncing, setSyncing] = useState(false);
+
+  // Auto-sync interval (or just sync on load)
+  useEffect(() => {
+    const interval = setInterval(() => {
+      triggerSync();
+    }, 10000); // every 10 seconds try to sync
+    return () => clearInterval(interval);
+  }, []);
+
+  const triggerSync = async () => {
+    setSyncing(true);
+    try {
+      await syncOfflineDeliveries(api);
+    } catch (e) {
+      console.error('Sync failed', e);
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  const queueDelivery = async (r: number, w: boolean, extra?: string) => {
+    const delivery: QueuedDelivery = {
+      clientEntryId: uuidv4(), // Need uuid here
+      matchId: matchSlug, // in a real app, resolve slug to ID or use ID directly
+      over: overs,
+      ballInOver: balls + 1,
+      bowler: 'mock-bowler-id',
+      bowlerName: 'Player Two',
+      batsman: 'mock-batter-id',
+      batsmanName: 'Player One',
+      runs: r,
+      extraType: extra,
+      wicket: w ? { type: 'bowled' } : undefined, // simplified
+      timestamp: Date.now(),
+      status: 'pending'
+    };
+    
+    await db.deliveriesQueue.add(delivery);
+    triggerSync();
+  };
+
   const addRuns = (r: number) => {
     setRuns(prev => prev + r);
+    queueDelivery(r, false);
     addBall();
   };
 
@@ -32,6 +77,7 @@ export default function MatchScoring() {
 
   const addWicket = () => {
     setWickets(prev => prev + 1);
+    queueDelivery(0, true);
     addBall();
   };
 
@@ -42,9 +88,12 @@ export default function MatchScoring() {
         <Link href="/" className="flex items-center text-slate-300 hover:text-white transition-colors">
           <ChevronLeft className="w-6 h-6 mr-1" /> Back
         </Link>
-        <div className="font-semibold">Live Score</div>
-        <button className="text-primary hover:text-primary-dark p-2">
-          <Save className="w-5 h-5" />
+        <div className="font-semibold flex items-center gap-2">
+          Live Score
+          {syncing && <Activity className="w-4 h-4 text-primary animate-pulse" />}
+        </div>
+        <button onClick={triggerSync} className="text-primary hover:text-primary-dark p-2">
+          <Save className={`w-5 h-5 ${syncing ? 'opacity-50' : ''}`} />
         </button>
       </header>
 

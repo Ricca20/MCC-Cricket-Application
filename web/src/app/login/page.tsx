@@ -2,17 +2,39 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { Mail, Lock, LogIn, UserPlus } from 'lucide-react';
+import api from '@/lib/api';
 
 export default function Login() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [name, setName] = useState('');
   const [isLogin, setIsLogin] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const router = useRouter();
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    // TODO: Connect to backend API
-    console.log('Submitting', { email, password });
+    setLoading(true);
+    setError('');
+    
+    try {
+      if (isLogin) {
+        const res = await api.post('/auth/login', { email, password });
+        localStorage.setItem('mcc_token', res.data.token);
+        router.push('/');
+      } else {
+        const res = await api.post('/auth/register', { name, email, password });
+        localStorage.setItem('mcc_token', res.data.token);
+        router.push('/');
+      }
+    } catch (err: any) {
+      setError(err.response?.data?.message || 'Something went wrong. Please try again.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -30,6 +52,12 @@ export default function Login() {
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-6">
+          {error && (
+            <div className="bg-red-500/10 border border-red-500/20 text-red-400 p-3 rounded-lg text-sm mb-4">
+              {error}
+            </div>
+          )}
+
           {!isLogin && (
             <div>
               <label className="block text-sm font-medium text-slate-300 mb-1.5 ml-1">Full Name</label>
@@ -37,6 +65,8 @@ export default function Login() {
                 type="text" 
                 className="input-field" 
                 placeholder="John Doe" 
+                value={name}
+                onChange={(e) => setName(e.target.value)}
                 required 
               />
             </div>
@@ -72,9 +102,9 @@ export default function Login() {
             </div>
           </div>
 
-          <button type="submit" className="btn-primary w-full flex items-center justify-center gap-2">
+          <button type="submit" disabled={loading} className="btn-primary w-full flex items-center justify-center gap-2 disabled:opacity-50">
             {isLogin ? <LogIn className="w-5 h-5" /> : <UserPlus className="w-5 h-5" />}
-            {isLogin ? 'Sign In' : 'Create Account'}
+            {loading ? 'Processing...' : (isLogin ? 'Sign In' : 'Create Account')}
           </button>
         </form>
 
