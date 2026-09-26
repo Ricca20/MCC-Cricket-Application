@@ -1,6 +1,7 @@
 const User = require('../models/User');
 const PlayerStats = require('../models/PlayerStats');
-const Match = require('../models/Match'); // Might need this later for match history
+const Match = require('../models/Match');
+const Innings = require('../models/Innings');
 
 // @desc    Get all players (club player pool)
 // @route   GET /api/players
@@ -48,18 +49,44 @@ const getPlayerById = async (req, res) => {
 // @access  Public or Protected
 const getPlayerTrends = async (req, res) => {
   try {
-    const player = await User.findById(req.params.id);
+    const playerId = req.params.id;
+    const player = await User.findById(playerId);
     if (!player) return res.status(404).json({ message: 'Player not found' });
 
-    // In a real implementation, you would aggregate data from all Innings where this player batted or bowled
-    // grouping by match date to generate a chronological array for Recharts
-    const mockTrends = [
-      { date: '2023-01-01', runs: 20, wickets: 1 },
-      { date: '2023-02-01', runs: 55, wickets: 0 },
-      { date: '2023-03-01', runs: 12, wickets: 3 }
-    ];
+    // Find all innings, populate match date
+    const allInnings = await Innings.find({
+      $or: [
+        { 'deliveries.batsman': playerId },
+        { 'deliveries.bowler': playerId }
+      ]
+    }).populate('matchId', 'date status');
 
-    res.json(mockTrends);
+    const matchStatsMap = {};
+
+    for (const inn of allInnings) {
+      if (!inn.matchId || inn.matchId.status !== 'completed') continue;
+
+      const dateStr = new Date(inn.matchId.date).toISOString().split('T')[0];
+      if (!matchStatsMap[dateStr]) {
+        matchStatsMap[dateStr] = { matchDate: dateStr, runs: 0, wickets: 0 };
+      }
+
+      for (const d of inn.deliveries) {
+        if (d.batsman && d.batsman.toString() === playerId && !['WD'].includes(d.extraType)) {
+          matchStatsMap[dateStr].runs += d.runs;
+        }
+        if (d.bowler && d.bowler.toString() === playerId && d.wicket && (!d.wicket.type || !['run out'].includes(d.wicket.type))) {
+          matchStatsMap[dateStr].wickets += 1;
+        }
+      }
+    }
+
+    const trends = Object.values(matchStatsMap).sort((a, b) => new Date(a.matchDate) - new Date(b.matchDate));
+    
+    // Grab career stats to pass along
+    const careerStats = await PlayerStats.findOne({ userId: playerId });
+
+    res.json({ trends, careerStats });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
