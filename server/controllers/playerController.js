@@ -115,9 +115,61 @@ const updatePlayerRole = async (req, res) => {
   }
 };
 
+// @desc    Update player profile
+// @route   PUT /api/players/:id
+// @access  Protected (self only)
+const updatePlayerProfile = async (req, res) => {
+  try {
+    const { name, nickname, profilePhoto, battingStyle, bowlingStyle, jerseyNumber } = req.body;
+    
+    // Check if user is editing their own profile or is admin
+    if (req.user.id !== req.params.id && !req.user.roles.includes('admin')) {
+      return res.status(403).json({ message: 'Not authorized to edit this profile' });
+    }
+
+    const player = await User.findById(req.params.id);
+    if (!player) {
+      return res.status(404).json({ message: 'Player not found' });
+    }
+
+    player.name = name || player.name;
+    player.nickname = nickname !== undefined ? nickname : player.nickname;
+    player.profilePhoto = profilePhoto !== undefined ? profilePhoto : player.profilePhoto;
+    player.battingStyle = battingStyle !== undefined ? battingStyle : player.battingStyle;
+    player.bowlingStyle = bowlingStyle !== undefined ? bowlingStyle : player.bowlingStyle;
+
+    if (jerseyNumber !== undefined && jerseyNumber !== '') {
+      const jNum = Number(jerseyNumber);
+      if (isNaN(jNum) || jNum < 1 || jNum > 999) {
+        return res.status(400).json({ message: 'Jersey number must be between 1 and 999' });
+      }
+
+      // Validate uniqueness if changing jersey number
+      if (player.jerseyNumber !== jNum) {
+        const existingJersey = await User.findOne({ jerseyNumber: jNum });
+        if (existingJersey) {
+          return res.status(400).json({ message: 'Jersey number is already taken by another player' });
+        }
+      }
+      player.jerseyNumber = jNum;
+    } else if (jerseyNumber === '') {
+      player.jerseyNumber = undefined;
+    }
+
+    await player.save();
+    res.json(player);
+  } catch (error) {
+    if (error.code === 11000) {
+      return res.status(400).json({ message: 'Jersey number is already taken by another player' });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
 module.exports = {
   getPlayers,
   getPlayerById,
   getPlayerTrends,
-  updatePlayerRole
+  updatePlayerRole,
+  updatePlayerProfile
 };

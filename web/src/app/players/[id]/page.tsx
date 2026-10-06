@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
-import { ChevronLeft, User, TrendingUp, Activity } from 'lucide-react';
+import { ChevronLeft, User, TrendingUp, Activity, Edit2, Save, X, Image as ImageIcon, Crosshair, Zap, Shield } from 'lucide-react';
 import Link from 'next/link';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import api from '@/lib/api';
@@ -14,97 +14,328 @@ export default function PlayerProfile() {
   const [player, setPlayer] = useState<any>(null);
   const [stats, setStats] = useState<any>(null);
   const [trends, setTrends] = useState<any[]>([]);
+  const [error, setError] = useState('');
+  
+  const [isOwner, setIsOwner] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editForm, setEditForm] = useState<any>({});
+  const [isSaving, setIsSaving] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
 
   useEffect(() => {
-    // We assume backend has a /players/:id endpoint for info, and /players/:id/trends
-    api.get(`/players/${id}`).then(res => {
-      setPlayer(res.data);
-    }).catch(err => console.error(err));
+    // Check ownership
+    const userData = localStorage.getItem('mcc_user');
+    if (userData) {
+      const user = JSON.parse(userData);
+      if (user.id === id || user.roles?.includes('admin')) {
+        setIsOwner(true);
+      }
+    }
 
+    // Fetch player profile
+    api.get(`/players/${id}`).then(res => {
+      setPlayer(res.data.player);
+      setEditForm(res.data.player);
+      if (!stats) setStats(res.data.stats);
+    }).catch(err => {
+      console.error(err);
+      setError('Player not found or server error');
+    });
+
+    // Fetch trends
     api.get(`/players/${id}/trends`).then(res => {
-       // Expecting array of { matchDate, runs, wickets }
        setTrends(res.data.trends || []);
        setStats(res.data.careerStats);
-    }).catch(err => console.error(err));
+    }).catch(err => {
+      console.error(err);
+    });
   }, [id]);
 
+  const handleSaveProfile = async () => {
+    setIsSaving(true);
+    setError('');
+    try {
+      const token = localStorage.getItem('mcc_token');
+      const res = await api.put(`/players/${id}`, editForm, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setPlayer(res.data);
+      setIsEditing(false);
+    } catch (err: any) {
+      console.error(err);
+      alert(err.response?.data?.message || 'Failed to update profile');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsUploading(true);
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('upload_preset', process.env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET || 'mcc_preset');
+
+    try {
+      const cloudName = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME || 'demo';
+      const res = await fetch(`https://api.cloudinary.com/v1_1/${cloudName}/image/upload`, {
+        method: 'POST',
+        body: formData,
+      });
+      const data = await res.json();
+      
+      if (data.secure_url) {
+        setEditForm({ ...editForm, profilePhoto: data.secure_url });
+      } else {
+        alert('Failed to upload image to Cloudinary.');
+      }
+    } catch (err) {
+      console.error('Image upload error:', err);
+      alert('An error occurred while uploading the image.');
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  if (error) {
+    return <div className="min-h-screen bg-[#0B1120] flex items-center justify-center text-white p-6"><div className="bg-red-500/20 border border-red-500/30 text-red-400 p-6 rounded-2xl max-w-md text-center">{error}</div></div>;
+  }
+
   if (!player || !stats) {
-    return <div className="min-h-screen bg-slate-900 flex items-center justify-center text-white"><Activity className="animate-spin w-8 h-8 text-primary"/></div>;
+    return <div className="min-h-screen bg-[#0B1120] flex items-center justify-center text-white"><Activity className="animate-spin w-10 h-10 text-primary"/></div>;
   }
 
   return (
-    <div className="min-h-screen bg-slate-900 text-white p-4 sm:p-8">
-      <Link href="/" className="inline-flex items-center text-slate-400 hover:text-white mb-6">
-        <ChevronLeft className="w-5 h-5 mr-1" /> Back
-      </Link>
+    <div className="min-h-screen bg-[#0B1120] text-white pb-20 relative overflow-hidden">
+      {/* Background Decor */}
+      <div className="absolute top-[-20%] left-[-10%] w-[60%] h-[60%] bg-primary/10 rounded-full blur-[140px] pointer-events-none" />
+      <div className="absolute bottom-[-20%] right-[-10%] w-[60%] h-[60%] bg-accent/10 rounded-full blur-[140px] pointer-events-none" />
 
-      <div className="max-w-4xl mx-auto space-y-6">
-        {/* Profile Header */}
-        <div className="glass-panel p-6 sm:p-10 flex flex-col sm:flex-row items-center gap-6 relative overflow-hidden">
-          <div className="absolute top-0 right-0 w-64 h-64 bg-primary/10 rounded-full blur-3xl -mr-32 -mt-32 pointer-events-none"></div>
-          
-          <div className="w-24 h-24 sm:w-32 sm:h-32 bg-slate-800 rounded-full flex items-center justify-center border-4 border-slate-700 shadow-xl shrink-0">
-             <User className="w-12 h-12 text-slate-500" />
+      <div className="max-w-5xl mx-auto px-4 sm:px-6 pt-6 sm:pt-10 space-y-8 relative z-10">
+        
+        {/* Navigation */}
+        <Link href="/" className="inline-flex items-center text-slate-400 hover:text-white transition-colors group">
+          <div className="bg-slate-800/80 p-2.5 rounded-full mr-3 group-hover:bg-slate-700 transition-colors border border-slate-700/50">
+            <ChevronLeft className="w-4 h-4" />
           </div>
-          <div className="text-center sm:text-left">
-            <h1 className="text-3xl sm:text-4xl font-bold mb-2">{player.name}</h1>
-            <div className="flex flex-wrap gap-2 justify-center sm:justify-start">
-              <span className="px-3 py-1 bg-white/5 border border-white/10 rounded-full text-xs text-slate-300 font-medium tracking-wide">
-                {player.role || 'Player'}
-              </span>
-              <span className="px-3 py-1 bg-primary/10 border border-primary/20 rounded-full text-xs text-primary font-medium tracking-wide">
-                {player.battingStyle || 'Right-hand bat'}
-              </span>
-            </div>
+          <span className="font-semibold text-sm uppercase tracking-wider">Back to Dashboard</span>
+        </Link>
+
+        {/* Profile Card */}
+        <div className="glass-panel overflow-hidden border-0 shadow-2xl bg-slate-900/60 backdrop-blur-xl ring-1 ring-white/10">
+          
+          {/* Cover Banner */}
+          <div className="h-32 sm:h-48 w-full bg-gradient-to-r from-emerald-600/40 via-slate-800 to-blue-600/40 relative">
+            <div className="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/carbon-fibre.png')] opacity-20 mix-blend-overlay"></div>
+            <div className="absolute bottom-0 left-0 w-full h-24 bg-gradient-to-t from-slate-900/90 to-transparent" />
+            
+            {/* Action Buttons */}
+            {isOwner && !isEditing && (
+               <div className="absolute top-4 right-4 z-20">
+                 <button onClick={() => setIsEditing(true)} className="bg-black/40 hover:bg-black/60 backdrop-blur-md text-white px-5 py-2.5 rounded-full text-sm font-bold flex items-center gap-2 border border-white/20 transition-all shadow-lg hover:shadow-xl hover:scale-105 active:scale-95">
+                   <Edit2 className="w-4 h-4" /> Edit Profile
+                 </button>
+               </div>
+            )}
+          </div>
+
+          <div className="px-6 sm:px-10 pb-8 relative -mt-16 sm:-mt-20">
+            {isEditing ? (
+              <div className="bg-slate-800/80 backdrop-blur-md p-6 sm:p-8 rounded-2xl border border-slate-700 shadow-xl mt-16 sm:mt-20">
+                <div className="flex justify-between items-center mb-6 pb-4 border-b border-slate-700">
+                  <h3 className="font-extrabold text-2xl">Edit Profile</h3>
+                  <button onClick={() => setIsEditing(false)} className="bg-slate-700 hover:bg-slate-600 p-2 rounded-full text-slate-300 hover:text-white transition-colors">
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+                
+                <div className="flex flex-col sm:flex-row gap-8 mb-8">
+                  {/* Editable Avatar */}
+                  <div className="flex flex-col items-center shrink-0">
+                    <label className={`w-32 h-32 sm:w-40 sm:h-40 bg-slate-800 rounded-full border-4 border-slate-600 shadow-xl shrink-0 relative group ${isUploading ? 'cursor-not-allowed opacity-70' : 'cursor-pointer hover:border-primary transition-colors'}`}>
+                       <div className="w-full h-full rounded-full overflow-hidden flex items-center justify-center bg-gradient-to-br from-slate-700 to-slate-800">
+                         {editForm.profilePhoto ? (
+                           <img src={editForm.profilePhoto} alt={player.name} className="w-full h-full object-cover" />
+                         ) : (
+                           <User className="w-16 h-16 text-slate-500" />
+                         )}
+                       </div>
+                       
+                       <div className="absolute bottom-0 right-2 bg-primary text-white p-2.5 rounded-full shadow-lg border-4 border-slate-800 group-hover:scale-110 group-hover:bg-primary-dark transition-all">
+                         {isUploading ? <Activity className="w-5 h-5 animate-spin" /> : <ImageIcon className="w-5 h-5" />}
+                       </div>
+                       
+                       <input type="file" accept="image/*" className="hidden" onChange={handleImageUpload} disabled={isUploading} />
+                    </label>
+                    <p className="text-xs font-medium text-slate-400 mt-4 text-center w-32">Click image to upload via Cloudinary</p>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-5 flex-1">
+                    <div className="md:col-span-2">
+                      <label className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5 block">Full Name</label>
+                      <input type="text" className="input-field" value={editForm.name || ''} onChange={e => setEditForm({...editForm, name: e.target.value})} />
+                    </div>
+                    <div>
+                      <label className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5 block">Nickname</label>
+                      <input type="text" className="input-field" value={editForm.nickname || ''} onChange={e => setEditForm({...editForm, nickname: e.target.value})} placeholder="e.g. The Finisher" />
+                    </div>
+                    <div>
+                      <label className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5 block">Jersey Number (1-999)</label>
+                      <input type="number" min="1" max="999" className="input-field" value={editForm.jerseyNumber || ''} onChange={e => setEditForm({...editForm, jerseyNumber: e.target.value})} placeholder="e.g. 10" />
+                    </div>
+                    <div>
+                      <label className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5 block">Batting Style</label>
+                      <select className="input-field" value={editForm.battingStyle || ''} onChange={e => setEditForm({...editForm, battingStyle: e.target.value})}>
+                        <option value="">Select Style</option>
+                        <option value="Right-hand bat">Right-hand bat</option>
+                        <option value="Left-hand bat">Left-hand bat</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5 block">Bowling Style</label>
+                      <select className="input-field" value={editForm.bowlingStyle || ''} onChange={e => setEditForm({...editForm, bowlingStyle: e.target.value})}>
+                        <option value="None">None</option>
+                        <option value="Right-arm Fast">Right-arm Fast</option>
+                        <option value="Right-arm Medium">Right-arm Medium</option>
+                        <option value="Right-arm Off Spin">Right-arm Off Spin</option>
+                        <option value="Right-arm Leg Spin">Right-arm Leg Spin</option>
+                        <option value="Left-arm Fast">Left-arm Fast</option>
+                        <option value="Left-arm Medium">Left-arm Medium</option>
+                        <option value="Left-arm Orthodox">Left-arm Orthodox</option>
+                        <option value="Left-arm Chinaman">Left-arm Chinaman</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+                
+                <div className="flex justify-end pt-4 border-t border-slate-700 mt-2">
+                  <button onClick={handleSaveProfile} disabled={isSaving} className="btn-primary flex items-center gap-2">
+                    {isSaving ? <Activity className="w-5 h-5 animate-spin" /> : <Save className="w-5 h-5" />} Save Changes
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="flex flex-col sm:flex-row gap-6 sm:gap-8 items-center sm:items-end">
+                {/* Avatar Display */}
+                <div className="w-32 h-32 sm:w-40 sm:h-40 rounded-full bg-slate-800 border-4 border-slate-900 shadow-2xl relative shrink-0 z-10 flex items-center justify-center overflow-hidden">
+                   {player.profilePhoto ? (
+                     <img src={player.profilePhoto} alt={player.name} className="w-full h-full object-cover" />
+                   ) : (
+                     <div className="w-full h-full bg-gradient-to-br from-slate-700 to-slate-800 flex items-center justify-center">
+                       <User className="w-16 h-16 text-slate-400" />
+                     </div>
+                   )}
+                </div>
+
+                {/* Info Display */}
+                <div className="flex-1 text-center sm:text-left pt-2 sm:pt-0 w-full">
+                  <div className="flex flex-wrap items-center justify-center sm:justify-start gap-x-3 gap-y-1 mb-1">
+                    <h1 className="text-3xl sm:text-4xl lg:text-5xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-white to-slate-300 drop-shadow-sm">
+                      {player.name}
+                    </h1>
+                    {player.jerseyNumber !== undefined && player.jerseyNumber !== null && (
+                      <span className="text-2xl sm:text-3xl font-black italic text-primary drop-shadow-md">#{player.jerseyNumber}</span>
+                    )}
+                  </div>
+                  
+                  {player.nickname && <p className="text-accent font-semibold mb-4 text-lg">"{player.nickname}"</p>}
+                  {!player.nickname && <div className="h-4"></div>}
+                  
+                  <div className="flex flex-wrap gap-2.5 justify-center sm:justify-start mt-2">
+                    <div className="px-4 py-1.5 bg-slate-800/80 border border-slate-700 rounded-full text-sm font-semibold shadow-sm flex items-center gap-1.5">
+                      <Shield className="w-4 h-4 text-slate-400" />
+                      {player.role === 'admin' ? 'Club Admin' : (player.playingRole || 'Player')}
+                    </div>
+                    {player.battingStyle && (
+                      <div className="px-4 py-1.5 bg-primary/10 border border-primary/20 text-primary-dark rounded-full text-sm font-semibold shadow-sm flex items-center gap-1.5">
+                        <Crosshair className="w-4 h-4" />
+                        {player.battingStyle}
+                      </div>
+                    )}
+                    {player.bowlingStyle && player.bowlingStyle !== 'None' && (
+                      <div className="px-4 py-1.5 bg-accent/10 border border-accent/20 text-blue-400 rounded-full text-sm font-semibold shadow-sm flex items-center gap-1.5">
+                        <Zap className="w-4 h-4" />
+                        {player.bowlingStyle}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
         {/* Career Stats Grid */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-          <div className="glass-panel p-5 text-center">
-             <div className="text-slate-400 text-sm font-medium mb-1">Matches</div>
-             <div className="text-3xl font-bold text-white">{stats.matchesPlayed || 0}</div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 sm:gap-6">
+          <div className="glass-panel p-6 relative overflow-hidden group hover:border-white/20 transition-all border-b-4 border-b-blue-500 bg-slate-900/40">
+             <div className="absolute -top-4 -right-4 p-4 opacity-5 group-hover:opacity-10 group-hover:scale-110 transition-all duration-300">
+               <Activity className="w-24 h-24 text-blue-500" />
+             </div>
+             <div className="text-slate-400 text-xs font-bold uppercase tracking-widest mb-2 relative z-10">Matches</div>
+             <div className="text-4xl sm:text-5xl font-black text-white relative z-10">{stats.matchesPlayed || 0}</div>
           </div>
-          <div className="glass-panel p-5 text-center">
-             <div className="text-slate-400 text-sm font-medium mb-1">Total Runs</div>
-             <div className="text-3xl font-bold text-primary">{stats.totalRuns || 0}</div>
+          
+          <div className="glass-panel p-6 relative overflow-hidden group hover:border-white/20 transition-all border-b-4 border-b-primary bg-slate-900/40">
+             <div className="absolute -top-4 -right-4 p-4 opacity-5 group-hover:opacity-10 group-hover:scale-110 transition-all duration-300">
+               <TrendingUp className="w-24 h-24 text-primary" />
+             </div>
+             <div className="text-slate-400 text-xs font-bold uppercase tracking-widest mb-2 relative z-10">Total Runs</div>
+             <div className="text-4xl sm:text-5xl font-black text-primary relative z-10">{stats.totalRuns || 0}</div>
           </div>
-          <div className="glass-panel p-5 text-center">
-             <div className="text-slate-400 text-sm font-medium mb-1">Wickets</div>
-             <div className="text-3xl font-bold text-accent">{stats.totalWickets || 0}</div>
+          
+          <div className="glass-panel p-6 relative overflow-hidden group hover:border-white/20 transition-all border-b-4 border-b-accent bg-slate-900/40">
+             <div className="absolute -top-4 -right-4 p-4 opacity-5 group-hover:opacity-10 group-hover:scale-110 transition-all duration-300">
+               <User className="w-24 h-24 text-accent" />
+             </div>
+             <div className="text-slate-400 text-xs font-bold uppercase tracking-widest mb-2 relative z-10">Wickets</div>
+             <div className="text-4xl sm:text-5xl font-black text-accent relative z-10">{stats.totalWickets || 0}</div>
           </div>
-          <div className="glass-panel p-5 text-center">
-             <div className="text-slate-400 text-sm font-medium mb-1">Strike Rate</div>
-             <div className="text-3xl font-bold text-white">
+          
+          <div className="glass-panel p-6 relative overflow-hidden group hover:border-white/20 transition-all border-b-4 border-b-purple-500 bg-slate-900/40">
+             <div className="absolute -top-4 -right-4 p-4 opacity-5 group-hover:opacity-10 group-hover:scale-110 transition-all duration-300">
+               <Zap className="w-24 h-24 text-purple-500" />
+             </div>
+             <div className="text-slate-400 text-xs font-bold uppercase tracking-widest mb-2 relative z-10">Strike Rate</div>
+             <div className="text-4xl sm:text-5xl font-black text-white relative z-10">
                {stats.ballsFaced ? ((stats.totalRuns / stats.ballsFaced) * 100).toFixed(1) : '0.0'}
              </div>
           </div>
         </div>
 
         {/* Form Guide / Trends Chart */}
-        <div className="glass-panel p-6">
-          <h2 className="text-xl font-bold mb-6 flex items-center gap-2">
-            <TrendingUp className="w-5 h-5 text-primary" /> Form Guide
+        <div className="glass-panel p-6 sm:p-8 bg-slate-900/40">
+          <h2 className="text-xl sm:text-2xl font-black mb-8 flex items-center gap-3">
+            <div className="bg-primary/20 p-2 rounded-lg text-primary">
+              <TrendingUp className="w-6 h-6" /> 
+            </div>
+            Form Guide
           </h2>
+          
           {trends.length > 0 ? (
-            <div className="h-64 w-full">
+            <div className="h-72 w-full">
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={trends} margin={{ top: 5, right: 20, bottom: 5, left: -20 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} />
-                  <XAxis dataKey="matchDate" stroke="#94a3b8" tick={{fontSize: 12}} />
-                  <YAxis yAxisId="left" stroke="#38bdf8" tick={{fontSize: 12}} />
-                  <YAxis yAxisId="right" orientation="right" stroke="#a78bfa" tick={{fontSize: 12}} />
+                  <XAxis dataKey="matchDate" stroke="#94a3b8" tick={{fontSize: 12, fontWeight: 500}} tickMargin={10} />
+                  <YAxis yAxisId="left" stroke="#10b981" tick={{fontSize: 12, fontWeight: 500}} />
+                  <YAxis yAxisId="right" orientation="right" stroke="#3b82f6" tick={{fontSize: 12, fontWeight: 500}} />
                   <Tooltip 
-                    contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', borderRadius: '8px' }}
-                    itemStyle={{ color: '#fff' }}
+                    contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', borderRadius: '12px', boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.5)' }}
+                    itemStyle={{ color: '#fff', fontWeight: 600 }}
                   />
-                  <Line yAxisId="left" type="monotone" dataKey="runs" name="Runs" stroke="#38bdf8" strokeWidth={3} dot={{ r: 4, fill: '#0f172a', strokeWidth: 2 }} activeDot={{ r: 6 }} />
-                  <Line yAxisId="right" type="monotone" dataKey="wickets" name="Wickets" stroke="#a78bfa" strokeWidth={3} dot={{ r: 4, fill: '#0f172a', strokeWidth: 2 }} activeDot={{ r: 6 }} />
+                  <Line yAxisId="left" type="monotone" dataKey="runs" name="Runs" stroke="#10b981" strokeWidth={4} dot={{ r: 5, fill: '#0f172a', strokeWidth: 2 }} activeDot={{ r: 8, fill: '#10b981', strokeWidth: 0 }} />
+                  <Line yAxisId="right" type="monotone" dataKey="wickets" name="Wickets" stroke="#3b82f6" strokeWidth={4} dot={{ r: 5, fill: '#0f172a', strokeWidth: 2 }} activeDot={{ r: 8, fill: '#3b82f6', strokeWidth: 0 }} />
                 </LineChart>
               </ResponsiveContainer>
             </div>
           ) : (
-             <div className="py-12 text-center text-slate-500">Not enough match data to display trends.</div>
+             <div className="py-20 text-center flex flex-col items-center justify-center bg-slate-800/30 rounded-2xl border border-slate-700/50 border-dashed">
+               <Activity className="w-16 h-16 text-slate-600 mb-4" />
+               <h3 className="text-xl font-bold text-slate-400 mb-2">No Match Data Yet</h3>
+               <p className="text-slate-500 max-w-md">Once you play matches and get scored, your performance trends and form guide will automatically populate here.</p>
+             </div>
           )}
         </div>
 

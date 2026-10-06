@@ -29,6 +29,18 @@ const createTournament = async (req, res) => {
   }
 };
 
+// @desc    Get all tournaments
+// @route   GET /api/tournaments
+// @access  Public
+const getTournaments = async (req, res) => {
+  try {
+    const tournaments = await Tournament.find().sort({ startDate: -1 });
+    res.json(tournaments);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
 // @desc    Add teams to tournament
 // @route   POST /api/tournaments/:id/teams
 // @access  Admin only
@@ -265,6 +277,7 @@ const clearStandingsCache = (tournamentId) => {
 
 module.exports = {
   createTournament,
+  getTournaments,
   addTeamsToTournament,
   generateDraw,
   getLiveTournament,

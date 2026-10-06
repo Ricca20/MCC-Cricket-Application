@@ -22,10 +22,4 @@ const playerStatsSchema = new mongoose.Schema({
   updatedAt: { type: Date, default: Date.now }
 });
 
-// Automatically update `updatedAt` before save
-playerStatsSchema.pre('save', function (next) {
-  this.updatedAt = Date.now();
-  next();
-});
-
 module.exports = mongoose.model('PlayerStats', playerStatsSchema);

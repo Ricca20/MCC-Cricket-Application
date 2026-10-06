@@ -3,12 +3,13 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { Mail, Lock, LogIn, UserPlus } from 'lucide-react';
+import { Mail, Lock, LogIn, UserPlus, Eye, EyeOff } from 'lucide-react';
 import api from '@/lib/api';
 
 export default function Login() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [name, setName] = useState('');
   const [isLogin, setIsLogin] = useState(true);
   const [loading, setLoading] = useState(false);
@@ -24,10 +25,12 @@ export default function Login() {
       if (isLogin) {
         const res = await api.post('/auth/login', { email, password });
         localStorage.setItem('mcc_token', res.data.token);
+        localStorage.setItem('mcc_user', JSON.stringify({ id: res.data._id, name: res.data.name, roles: res.data.roles }));
         router.push('/');
       } else {
         const res = await api.post('/auth/register', { name, email, password });
         localStorage.setItem('mcc_token', res.data.token);
+        localStorage.setItem('mcc_user', JSON.stringify({ id: res.data._id, name: res.data.name, roles: res.data.roles }));
         router.push('/');
       }
     } catch (err: any) {
@@ -67,6 +70,7 @@ export default function Login() {
                 placeholder="John Doe" 
                 value={name}
                 onChange={(e) => setName(e.target.value)}
+                autoComplete="off"
                 required 
               />
             </div>
@@ -78,10 +82,12 @@ export default function Login() {
               <Mail className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 w-5 h-5" />
               <input 
                 type="email" 
-                className="input-field pl-12" 
+                className="input-field"
+                style={{ paddingLeft: '3rem' }}
                 placeholder="player@mcc.com"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
+                autoComplete="off"
                 required 
               />
             </div>
@@ -92,13 +98,22 @@ export default function Login() {
             <div className="relative">
               <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 w-5 h-5" />
               <input 
-                type="password" 
-                className="input-field pl-12" 
+                type={showPassword ? "text" : "password"}
+                className="input-field pr-12" 
+                style={{ paddingLeft: '3rem' }}
                 placeholder="••••••••"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
+                autoComplete="new-password"
                 required 
               />
+              <button
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+                className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white transition-colors"
+              >
+                {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+              </button>
             </div>
           </div>
 

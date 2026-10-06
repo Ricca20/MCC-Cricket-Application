@@ -11,6 +11,8 @@ const userSchema = new mongoose.Schema({
   },
   battingStyle: { type: String },
   bowlingStyle: { type: String },
+  nickname: { type: String },
+  jerseyNumber: { type: Number, unique: true, sparse: true },
   profilePhoto: { type: String },
   pushSubscriptions: { type: Array, default: [] },
   joinedDate: { type: Date, default: Date.now },
