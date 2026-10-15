@@ -1,15 +1,25 @@
 const express = require('express');
 const router = express.Router();
-const { createMatch, getMatchById, getLiveMatch, addDelivery, completeMatch, updateDelivery, getMatchSummary } = require('../controllers/matchController');
+const {
+  listMatches, listPublicMatches, createMatch, getMatchById, getLiveMatch, getMatchSummary,
+  startMatch, addDelivery, undoLastDelivery, endInnings, completeMatch, updateDelivery
+} = require('../controllers/matchController');
 const { protect, adminOnly, scorerOrAdmin } = require('../middleware/auth');
-const { validateDelivery } = require('../middleware/validate');
+const { validate, validateObjectId } = require('../middleware/validate');
 
-router.post('/', protect, adminOnly, createMatch);
+const id = validateObjectId('id');
+
+router.get('/', protect, scorerOrAdmin, listMatches);
+router.get('/public', listPublicMatches); // Public
+router.post('/', protect, adminOnly, validate('createMatch'), createMatch);
 router.get('/live/:slug', getLiveMatch); // Public
-router.get('/:id/summary', getMatchSummary); // Public shareable summary
-router.get('/:id', protect, getMatchById); // Protected
-router.post('/:id/deliveries', protect, scorerOrAdmin, validateDelivery, addDelivery);
-router.patch('/:id/deliveries/:deliveryId', protect, adminOnly, updateDelivery); // Admin correction
-router.post('/:id/complete', protect, scorerOrAdmin, completeMatch);
+router.get('/live/:slug/summary', getMatchSummary); // Public shareable summary
+router.get('/:id', id, protect, getMatchById); // Protected
+router.post('/:id/start', id, protect, scorerOrAdmin, validate('startMatch'), startMatch);
+router.post('/:id/deliveries', id, protect, scorerOrAdmin, validate('delivery'), addDelivery);
+router.delete('/:id/deliveries/last', id, protect, scorerOrAdmin, undoLastDelivery);
+router.patch('/:id/deliveries/:deliveryId', validateObjectId('id', 'deliveryId'), protect, adminOnly, validate('updateDelivery'), updateDelivery); // Admin correction
+router.post('/:id/innings/end', id, protect, scorerOrAdmin, endInnings);
+router.post('/:id/complete', id, protect, scorerOrAdmin, validate('completeMatch'), completeMatch);
 
 module.exports = router;

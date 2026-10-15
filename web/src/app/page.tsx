@@ -1,30 +1,17 @@
 "use client";
 
-import { useEffect, useState } from 'react';
+import { useStoredUser } from '@/lib/hooks';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { ArrowRight, Activity, Users, Trophy, ShieldAlert, LogOut, Search } from 'lucide-react';
+import { ArrowRight, Activity, Users, Trophy, ShieldAlert, LogOut } from 'lucide-react';
+import { logout } from '@/lib/api';
 
 export default function Home() {
-  const [user, setUser] = useState<{ id: string, name: string, roles: string[] } | null>(null);
+  const user = useStoredUser();
   const router = useRouter();
 
-  useEffect(() => {
-    const token = localStorage.getItem('mcc_token');
-    const userData = localStorage.getItem('mcc_user');
-    if (token && userData) {
-      try {
-        setUser(JSON.parse(userData));
-      } catch (e) {
-        console.error(e);
-      }
-    }
-  }, []);
-
-  const handleLogout = () => {
-    localStorage.removeItem('mcc_token');
-    localStorage.removeItem('mcc_user');
-    setUser(null);
+  const handleLogout = async () => {
+    await logout().catch(() => {});
     router.refresh();
   };
 
@@ -73,7 +60,7 @@ export default function Home() {
             </Link>
 
             {/* Live Matches Link */}
-            <Link href="/tournaments" className="glass-panel p-6 flex flex-col items-center justify-center text-center hover:bg-white/10 transition-all hover:-translate-y-1">
+            <Link href="/live" className="glass-panel p-6 flex flex-col items-center justify-center text-center hover:bg-white/10 transition-all hover:-translate-y-1">
               <div className="w-16 h-16 bg-green-500/20 rounded-full flex items-center justify-center mb-4 text-green-500">
                 <Activity className="w-8 h-8" />
               </div>
@@ -139,7 +126,7 @@ export default function Home() {
           <Link href="/login" className="btn-primary flex items-center justify-center gap-2">
             Sign In / Register <ArrowRight className="w-5 h-5" />
           </Link>
-          <Link href="/tournaments" className="px-6 py-3 rounded-xl font-semibold bg-white/10 hover:bg-white/20 text-white transition-colors border border-white/5">
+          <Link href="/live" className="px-6 py-3 rounded-xl font-semibold bg-white/10 hover:bg-white/20 text-white transition-colors border border-white/5">
             View Live Matches
           </Link>
         </div>

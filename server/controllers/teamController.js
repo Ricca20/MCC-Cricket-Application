@@ -1,34 +1,33 @@
 const Team = require('../models/Team');
+const User = require('../models/User');
 
 // @desc    Create a new team
 // @route   POST /api/teams
 // @access  Admin only
 const createTeam = async (req, res) => {
-  try {
-    const { name, isClubTeam, players } = req.body;
+  const { name, isClubTeam, players = [] } = req.body;
 
-    const team = await Team.create({
-      name,
-      isClubTeam: isClubTeam || false,
-      players: players || []
-    });
-
-    res.status(201).json(team);
-  } catch (error) {
-    res.status(500).json({ message: error.message });
+  // Linked players must be real accounts; visiting players stay name-only
+  const userIds = [...new Set(players.filter((p) => p.userId).map((p) => p.userId))];
+  if (userIds.length && (await User.countDocuments({ _id: { $in: userIds } })) !== userIds.length) {
+    return res.status(400).json({ message: 'One or more linked players do not exist' });
   }
+
+  const team = await Team.create({
+    name,
+    isClubTeam: isClubTeam || false,
+    players: players.map((p) => ({ name: p.name, userId: p.userId || null }))
+  });
+
+  res.status(201).json(team);
 };
 
 // @desc    Get all teams
 // @route   GET /api/teams
-// @access  Public or Protected
+// @access  Public
 const getTeams = async (req, res) => {
-  try {
-    const teams = await Team.find({});
-    res.json(teams);
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
+  const teams = await Team.find({}).sort({ name: 1 });
+  res.json(teams);
 };
 
 module.exports = {

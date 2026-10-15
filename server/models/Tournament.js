@@ -6,6 +6,7 @@ const tournamentSchema = new mongoose.Schema({
   teams: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Team' }],
   status: { type: String, enum: ['draft', 'draw-published', 'in-progress', 'completed'], default: 'draft' },
   publicSlug: { type: String, unique: true, required: true },
+  groupCount: { type: Number, default: null }, // groups-knockout only
   startDate: { type: Date, default: Date.now },
   createdAt: { type: Date, default: Date.now }
 });

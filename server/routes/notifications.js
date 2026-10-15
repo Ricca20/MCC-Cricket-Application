@@ -1,14 +1,11 @@
 const express = require('express');
 const router = express.Router();
-const { subscribe, sendNotification, publicVapidKey } = require('../controllers/notificationController');
+const { getPublicKey, subscribe, sendNotification } = require('../controllers/notificationController');
 const { protect, adminOnly } = require('../middleware/auth');
+const { validate } = require('../middleware/validate');
 
-// Route to serve the public key to the frontend
-router.get('/vapid-public-key', (req, res) => {
-  res.send(publicVapidKey);
-});
-
-router.post('/subscribe', protect, subscribe);
-router.post('/send', protect, adminOnly, sendNotification);
+router.get('/vapid-public-key', getPublicKey);
+router.post('/subscribe', protect, validate('pushSubscription'), subscribe);
+router.post('/send', protect, adminOnly, validate('sendNotification'), sendNotification);
 
 module.exports = router;

@@ -4,7 +4,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Mail, Lock, LogIn, UserPlus, Eye, EyeOff } from 'lucide-react';
-import api from '@/lib/api';
+import api, { errorMessage, startSession } from '@/lib/api';
 
 export default function Login() {
   const [email, setEmail] = useState('');
@@ -22,19 +22,13 @@ export default function Login() {
     setError('');
     
     try {
-      if (isLogin) {
-        const res = await api.post('/auth/login', { email, password });
-        localStorage.setItem('mcc_token', res.data.token);
-        localStorage.setItem('mcc_user', JSON.stringify({ id: res.data._id, name: res.data.name, roles: res.data.roles }));
-        router.push('/');
-      } else {
-        const res = await api.post('/auth/register', { name, email, password });
-        localStorage.setItem('mcc_token', res.data.token);
-        localStorage.setItem('mcc_user', JSON.stringify({ id: res.data._id, name: res.data.name, roles: res.data.roles }));
-        router.push('/');
-      }
-    } catch (err: any) {
-      setError(err.response?.data?.message || 'Something went wrong. Please try again.');
+      const res = isLogin
+        ? await api.post('/auth/login', { email, password })
+        : await api.post('/auth/register', { name, email, password });
+      startSession(res.data);
+      router.push('/');
+    } catch (err) {
+      setError(errorMessage(err, 'Something went wrong. Please try again.'));
     } finally {
       setLoading(false);
     }
@@ -104,7 +98,8 @@ export default function Login() {
                 placeholder="••••••••"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                autoComplete="new-password"
+ autoComplete={isLogin ? "current-password" : "new-password"}
+                minLength={isLogin ? undefined : 8}
                 required 
               />
               <button
