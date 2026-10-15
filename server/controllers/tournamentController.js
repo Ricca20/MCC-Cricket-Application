@@ -1,286 +1,205 @@
-const crypto = require('crypto');
 const Tournament = require('../models/Tournament');
 const Fixture = require('../models/Fixture');
 const Match = require('../models/Match');
-const Innings = require('../models/Innings');
-
-// In-memory cache for Standings (simulating Redis for performance)
-const standingsCache = new Map();
-
+const Team = require('../models/Team');
+const { createWithSlug, shuffle } = require('../lib/slug');
+const draw = require('../services/draw');
+const { getStandings: standingsFor, computeStandings, clearStandingsCache } = require('../services/standings');
+const { emitTournamentUpdate } = require('../services/matchFlow');
 
 // @desc    Create a tournament
 // @route   POST /api/tournaments
 // @access  Admin only
 const createTournament = async (req, res) => {
-  try {
-    const { name, format, startDate } = req.body;
-    const publicSlug = `trn-${crypto.randomBytes(3).toString('hex')}`;
-
-    const tournament = await Tournament.create({
-      name,
-      format,
-      startDate,
-      publicSlug
-    });
-
-    res.status(201).json(tournament);
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
+  const { name, format, startDate } = req.body;
+  const tournament = await createWithSlug(Tournament, 'trn', { name, format, startDate });
+  res.status(201).json(tournament);
 };
 
 // @desc    Get all tournaments
 // @route   GET /api/tournaments
 // @access  Public
 const getTournaments = async (req, res) => {
-  try {
-    const tournaments = await Tournament.find().sort({ startDate: -1 });
-    res.json(tournaments);
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
+  const tournaments = await Tournament.find().sort({ startDate: -1 });
+  res.json(tournaments);
 };
 
-// @desc    Add teams to tournament
+const loadDraftTournament = async (req, res) => {
+  const tournament = await Tournament.findById(req.params.id);
+  if (!tournament) {
+    res.status(404).json({ message: 'Tournament not found' });
+    return null;
+  }
+  if (tournament.status !== 'draft') {
+    res.status(400).json({ message: 'Cannot change teams after the draw is published' });
+    return null;
+  }
+  const { teamIds } = req.body;
+  if ((await Team.countDocuments({ _id: { $in: teamIds } })) !== new Set(teamIds).size) {
+    res.status(400).json({ message: 'One or more teams do not exist' });
+    return null;
+  }
+  return tournament;
+};
+
+// @desc    Add teams to tournament (keeps existing entries)
 // @route   POST /api/tournaments/:id/teams
 // @access  Admin only
 const addTeamsToTournament = async (req, res) => {
-  try {
-    const { teamIds } = req.body;
-    const tournament = await Tournament.findById(req.params.id);
+  const tournament = await loadDraftTournament(req, res);
+  if (!tournament) return;
 
-    if (!tournament) return res.status(404).json({ message: 'Tournament not found' });
-    if (tournament.status !== 'draft') return res.status(400).json({ message: 'Cannot add teams after draw is published' });
+  const ids = new Set(tournament.teams.map(String));
+  req.body.teamIds.forEach((id) => ids.add(id));
+  tournament.teams = [...ids];
+  await tournament.save();
 
-    tournament.teams = teamIds;
-    await tournament.save();
-
-    res.json({ message: 'Teams added successfully', tournament });
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
+  res.json({ message: 'Teams added successfully', tournament });
 };
 
-// Helper for Round Robin Draw
-const generateRoundRobin = async (tournamentId, teams) => {
-  const fixtures = [];
-  for (let i = 0; i < teams.length; i++) {
-    for (let j = i + 1; j < teams.length; j++) {
-      fixtures.push({
-        tournamentId,
-        round: 'Group Stage',
-        teamA: teams[i],
-        teamB: teams[j]
-      });
-    }
-  }
-  return fixtures;
+// @desc    Replace the tournament's team list
+// @route   PUT /api/tournaments/:id/teams
+// @access  Admin only
+const setTournamentTeams = async (req, res) => {
+  const tournament = await loadDraftTournament(req, res);
+  if (!tournament) return;
+
+  tournament.teams = [...new Set(req.body.teamIds)];
+  await tournament.save();
+
+  res.json({ message: 'Teams updated successfully', tournament });
 };
 
-// Helper for Knockout Draw
-const generateKnockout = async (tournamentId, teams) => {
-  // Shuffle array
-  const shuffled = [...teams].sort(() => 0.5 - Math.random());
-  const fixtures = [];
-  
-  // Naive knockout pairing for round 1 (assumes power of 2 for simplicity in MVP)
-  for (let i = 0; i < shuffled.length; i += 2) {
-    if (i + 1 < shuffled.length) {
-      fixtures.push({
-        tournamentId,
-        round: 'Round 1',
-        teamA: shuffled[i],
-        teamB: shuffled[i + 1]
-      });
-    }
-  }
-  return fixtures;
-};
-
-// @desc    Generate Draw
+// @desc    Generate Draw (re-runnable until a match has been created from it)
 // @route   POST /api/tournaments/:id/generate-draw
 // @access  Admin only
 const generateDraw = async (req, res) => {
-  try {
-    const tournament = await Tournament.findById(req.params.id);
-    if (!tournament) return res.status(404).json({ message: 'Tournament not found' });
-    if (tournament.teams.length < 2) return res.status(400).json({ message: 'Not enough teams' });
-
-    await Fixture.deleteMany({ tournamentId: tournament._id }); // Reset if regenerated in draft
-
-    let fixtures = [];
-    if (tournament.format === 'round-robin') {
-      fixtures = await generateRoundRobin(tournament._id, tournament.teams);
-    } else if (tournament.format === 'knockout') {
-      fixtures = await generateKnockout(tournament._id, tournament.teams);
-    } else {
-      // For groups-knockout, we can just default to round-robin for the groups initially
-      fixtures = await generateRoundRobin(tournament._id, tournament.teams);
-    }
-
-    await Fixture.insertMany(fixtures);
-    
-    tournament.status = 'draw-published';
-    await tournament.save();
-
-    res.json({ message: 'Draw generated', fixturesCount: fixtures.length });
-  } catch (error) {
-    res.status(500).json({ message: error.message });
+  const tournament = await Tournament.findById(req.params.id);
+  if (!tournament) return res.status(404).json({ message: 'Tournament not found' });
+  if (!['draft', 'draw-published'].includes(tournament.status)) {
+    return res.status(400).json({ message: 'The tournament is already under way' });
   }
+  if (await Fixture.exists({ tournamentId: tournament._id, matchId: { $ne: null } })) {
+    return res.status(400).json({ message: 'Matches have already been created from this draw' });
+  }
+
+  const teams = tournament.teams;
+  if (teams.length < 2) return res.status(400).json({ message: 'Not enough teams' });
+
+  let fixtures;
+  if (tournament.format === 'round-robin') {
+    fixtures = draw.roundRobinFixtures(tournament._id, teams);
+  } else if (tournament.format === 'knockout') {
+    fixtures = draw.knockoutFixtures(tournament._id, shuffle(teams));
+  } else {
+    const groupCount = req.body.groupCount || Math.max(2, Math.round(teams.length / 4));
+    if (teams.length < groupCount * 2) {
+      return res.status(400).json({ message: `Need at least ${groupCount * 2} teams for ${groupCount} groups` });
+    }
+    fixtures = draw.groupFixtures(tournament._id, teams, groupCount);
+    tournament.groupCount = groupCount;
+  }
+
+  await Fixture.deleteMany({ tournamentId: tournament._id });
+  await Fixture.insertMany(fixtures);
+
+  tournament.status = 'draw-published';
+  await tournament.save();
+  clearStandingsCache(tournament._id);
+  emitTournamentUpdate(req.app.get('io'), tournament._id);
+
+  res.json({ message: 'Draw generated', fixturesCount: fixtures.filter((f) => !f.isBye).length });
+};
+
+// @desc    Build the knockout bracket from the group tables
+// @route   POST /api/tournaments/:id/generate-knockout
+// @access  Admin only
+const generateKnockout = async (req, res) => {
+  const tournament = await Tournament.findById(req.params.id);
+  if (!tournament) return res.status(404).json({ message: 'Tournament not found' });
+  if (tournament.format !== 'groups-knockout') {
+    return res.status(400).json({ message: 'Only groups-knockout tournaments have a knockout stage to generate' });
+  }
+  if (await Fixture.exists({ tournamentId: tournament._id, stage: 'knockout' })) {
+    return res.status(400).json({ message: 'The knockout stage already exists' });
+  }
+
+  const groupFixtures = await Fixture.find({ tournamentId: tournament._id, stage: 'group' });
+  const completed = await Match.countDocuments({
+    _id: { $in: groupFixtures.map((f) => f.matchId).filter(Boolean) },
+    status: 'completed'
+  });
+  if (!groupFixtures.length || completed !== groupFixtures.length) {
+    return res.status(400).json({ message: 'Finish every group match first' });
+  }
+
+  const standings = await computeStandings(tournament._id);
+  const groups = new Map();
+  for (const row of standings) {
+    if (!groups.has(row.group)) groups.set(row.group, []);
+    groups.get(row.group).push(row);
+  }
+  const tables = [...groups.keys()].sort().map((g) => groups.get(g));
+
+  const fixtures = draw.knockoutFixtures(tournament._id, draw.crossSeedQualifiers(tables));
+  await Fixture.insertMany(fixtures);
+  emitTournamentUpdate(req.app.get('io'), tournament._id);
+
+  res.json({ message: 'Knockout stage generated', fixturesCount: fixtures.filter((f) => !f.isBye).length });
+};
+
+// @desc    Fixtures for one tournament (admin match creation)
+// @route   GET /api/tournaments/:id/fixtures
+// @access  Public
+const getFixtures = async (req, res) => {
+  const fixtures = await Fixture.find({ tournamentId: req.params.id })
+    .sort({ stage: 1, roundNumber: 1 })
+    .populate('teamA', 'name')
+    .populate('teamB', 'name');
+  res.json(fixtures);
 };
 
 // @desc    Get live tournament (public)
 // @route   GET /api/tournaments/live/:slug
 // @access  Public
 const getLiveTournament = async (req, res) => {
-  try {
-    const tournament = await Tournament.findOne({ publicSlug: req.params.slug }).populate('teams', 'name');
-    if (!tournament) return res.status(404).json({ message: 'Tournament not found' });
+  const tournament = await Tournament.findOne({ publicSlug: req.params.slug }).populate('teams', 'name');
+  if (!tournament) return res.status(404).json({ message: 'Tournament not found' });
 
-    const fixtures = await Fixture.find({ tournamentId: tournament._id })
-      .populate('teamA', 'name')
-      .populate('teamB', 'name')
-      .populate('matchId', 'status result');
+  const fixtures = await Fixture.find({ tournamentId: tournament._id })
+    .sort({ stage: 1, roundNumber: 1 })
+    .populate('teamA', 'name')
+    .populate('teamB', 'name')
+    .populate('winner', 'name')
+    .populate({ path: 'matchId', select: 'status result publicSlug isPublic' });
 
-    res.json({ tournament, fixtures });
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
+  // Private matches stay listed, but without a link to their scoreboard
+  const safeFixtures = fixtures.map((f) => {
+    const json = f.toJSON();
+    if (json.matchId && !json.matchId.isPublic) delete json.matchId.publicSlug;
+    return json;
+  });
+
+  res.json({ tournament, fixtures: safeFixtures });
 };
 
 // @desc    Get Standings
 // @route   GET /api/tournaments/:id/standings
 // @access  Public
 const getStandings = async (req, res) => {
-  try {
-    const tournamentId = req.params.id;
-
-    // Check Cache first
-    if (standingsCache.has(tournamentId)) {
-      console.log(`[Cache Hit] Serving standings for tournament ${tournamentId}`);
-      return res.json(standingsCache.get(tournamentId));
-    }
-
-    console.log(`[Cache Miss] Calculating standings for tournament ${tournamentId}`);
-
-    const tournament = await Tournament.findById(tournamentId).populate('teams', 'name');
-    if (!tournament) return res.status(404).json({ message: 'Tournament not found' });
-
-    // Initialize standings table
-    const standingsMap = {};
-    tournament.teams.forEach(team => {
-      standingsMap[team._id.toString()] = {
-        teamId: team._id,
-        teamName: team.name,
-        played: 0,
-        won: 0,
-        lost: 0,
-        points: 0,
-        totalRunsScored: 0,
-        totalOversFaced: 0,
-        totalRunsConceded: 0,
-        totalOversBowled: 0,
-        nrr: 0 // Net Run Rate
-      };
-    });
-
-    // Find all fixtures linked to completed matches
-    const fixtures = await Fixture.find({ tournamentId: tournament._id, matchId: { $exists: true } })
-      .populate('matchId');
-
-    for (const fixture of fixtures) {
-      if (fixture.matchId && fixture.matchId.status === 'completed') {
-        const match = fixture.matchId;
-        const innings = await Innings.find({ matchId: match._id });
-
-        if (innings.length >= 2) {
-          // Simplistic logic assuming innings[0] is teamA and innings[1] is teamB
-          const inn1 = innings[0];
-          const inn2 = innings[1];
-
-          // Determine winner by total runs (ignoring super overs, chasing balls remaining, etc for MVP)
-          let winnerId = null;
-          let loserId = null;
-
-          if (inn1.totalRuns > inn2.totalRuns) {
-            winnerId = match.teamA.id.toString();
-            loserId = match.teamB.id.toString();
-          } else if (inn2.totalRuns > inn1.totalRuns) {
-            winnerId = match.teamB.id.toString();
-            loserId = match.teamA.id.toString();
-          }
-
-          const teamAId = match.teamA.id.toString();
-          const teamBId = match.teamB.id.toString();
-
-          if (standingsMap[teamAId] && standingsMap[teamBId]) {
-            standingsMap[teamAId].played += 1;
-            standingsMap[teamBId].played += 1;
-
-            if (winnerId === teamAId) {
-              standingsMap[teamAId].won += 1;
-              standingsMap[teamAId].points += 2;
-              standingsMap[teamBId].lost += 1;
-            } else if (winnerId === teamBId) {
-              standingsMap[teamBId].won += 1;
-              standingsMap[teamBId].points += 2;
-              standingsMap[teamAId].lost += 1;
-            } else {
-              // Tie
-              standingsMap[teamAId].points += 1;
-              standingsMap[teamBId].points += 1;
-            }
-
-            // NRR Calculation accumulation
-            standingsMap[teamAId].totalRunsScored += inn1.totalRuns;
-            standingsMap[teamAId].totalOversFaced += inn1.totalOvers || 20; // Assume 20 if undefined
-            standingsMap[teamAId].totalRunsConceded += inn2.totalRuns;
-            standingsMap[teamAId].totalOversBowled += inn2.totalOvers || 20;
-
-            standingsMap[teamBId].totalRunsScored += inn2.totalRuns;
-            standingsMap[teamBId].totalOversFaced += inn2.totalOvers || 20;
-            standingsMap[teamBId].totalRunsConceded += inn1.totalRuns;
-            standingsMap[teamBId].totalOversBowled += inn1.totalOvers || 20;
-          }
-        }
-      }
-    }
-
-    // Calculate final NRR and sort
-    const standings = Object.values(standingsMap).map(team => {
-      const runRateFor = team.totalOversFaced > 0 ? (team.totalRunsScored / team.totalOversFaced) : 0;
-      const runRateAgainst = team.totalOversBowled > 0 ? (team.totalRunsConceded / team.totalOversBowled) : 0;
-      team.nrr = parseFloat((runRateFor - runRateAgainst).toFixed(3));
-      return team;
-    });
-
-    standings.sort((a, b) => {
-      if (b.points !== a.points) return b.points - a.points;
-      return b.nrr - a.nrr;
-    });
-
-    // Save to Cache (set to expire after 5 mins or invalidate on match completion)
-    standingsCache.set(tournamentId, standings);
-    setTimeout(() => standingsCache.delete(tournamentId), 5 * 60 * 1000); // 5 min TTL
-
-    res.json(standings);
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
-};
-
-// Helper function to expose cache invalidation (to be used by completeMatch if needed)
-const clearStandingsCache = (tournamentId) => {
-  if (tournamentId) standingsCache.delete(tournamentId.toString());
-  else standingsCache.clear();
+  const standings = await standingsFor(req.params.id);
+  if (!standings) return res.status(404).json({ message: 'Tournament not found' });
+  res.json(standings);
 };
 
 module.exports = {
   createTournament,
   getTournaments,
   addTeamsToTournament,
+  setTournamentTeams,
   generateDraw,
+  generateKnockout,
+  getFixtures,
   getLiveTournament,
-  getStandings,
-  clearStandingsCache
+  getStandings
 };

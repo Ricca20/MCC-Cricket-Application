@@ -1,169 +1,128 @@
 const User = require('../models/User');
 const PlayerStats = require('../models/PlayerStats');
-const Match = require('../models/Match');
-const Innings = require('../models/Innings');
+const { playerMatchLines } = require('../services/stats');
+const { allowedPhotoUrl } = require('./uploadController');
+
+const toDateString = (date) => new Date(date).toISOString().split('T')[0];
 
 // @desc    Get all players (club player pool)
 // @route   GET /api/players
-// @access  Public or Protected depending on preference (Assuming Public/Authenticated)
+// @access  Public (public fields only)
 const getPlayers = async (req, res) => {
-  try {
-    const players = await User.find({ roles: 'player' }).select('-passwordHash');
-    res.json(players);
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
+  const players = await User.find({}).select(User.PUBLIC_FIELDS).sort({ name: 1 });
+  res.json(players);
 };
 
 // @desc    Get player profile, stats, and match history
 // @route   GET /api/players/:id
-// @access  Public or Protected
+// @access  Public (public fields only)
 const getPlayerById = async (req, res) => {
-  try {
-    const player = await User.findById(req.params.id).select('-passwordHash');
-    if (!player) {
-      return res.status(404).json({ message: 'Player not found' });
-    }
-
-    // Find stats, create if they don't exist yet
-    let stats = await PlayerStats.findOne({ userId: player._id });
-    if (!stats) {
-      stats = await PlayerStats.create({ userId: player._id });
-    }
-
-    // TODO: fetch match history involving this player (once Match data is populated)
-    const matchHistory = [];
-
-    res.json({
-      player,
-      stats,
-      matchHistory
-    });
-  } catch (error) {
-    res.status(500).json({ message: error.message });
+  const player = await User.findById(req.params.id).select(User.PUBLIC_FIELDS);
+  if (!player) {
+    return res.status(404).json({ message: 'Player not found' });
   }
+
+  // Unsaved defaults when the player hasn't played yet: a GET never writes
+  const stats = (await PlayerStats.findOne({ userId: player._id })) || new PlayerStats({ userId: player._id });
+
+  const lines = await playerMatchLines(player._id);
+  const matchHistory = lines.reverse().map((l) => ({
+    matchId: l.matchId,
+    matchDate: toDateString(l.matchDate),
+    title: l.title,
+    result: l.result,
+    publicSlug: l.publicSlug,
+    batting: l.batted ? { runs: l.runs, balls: l.balls, out: l.out } : null,
+    bowling: l.bowled ? { wickets: l.wickets, runsConceded: l.runsConceded, balls: l.ballsBowled } : null
+  }));
+
+  res.json({ player, stats, matchHistory });
 };
 
-// @desc    Get player stat trends for charts (Phase 3)
+// @desc    Get player stat trends for charts (one point per completed match)
 // @route   GET /api/players/:id/trends
-// @access  Public or Protected
+// @access  Public
 const getPlayerTrends = async (req, res) => {
-  try {
-    const playerId = req.params.id;
-    const player = await User.findById(playerId);
-    if (!player) return res.status(404).json({ message: 'Player not found' });
-
-    // Find all innings, populate match date
-    const allInnings = await Innings.find({
-      $or: [
-        { 'deliveries.batsman': playerId },
-        { 'deliveries.bowler': playerId }
-      ]
-    }).populate('matchId', 'date status');
-
-    const matchStatsMap = {};
-
-    for (const inn of allInnings) {
-      if (!inn.matchId || inn.matchId.status !== 'completed') continue;
-
-      const dateStr = new Date(inn.matchId.date).toISOString().split('T')[0];
-      if (!matchStatsMap[dateStr]) {
-        matchStatsMap[dateStr] = { matchDate: dateStr, runs: 0, wickets: 0 };
-      }
-
-      for (const d of inn.deliveries) {
-        if (d.batsman && d.batsman.toString() === playerId && !['WD'].includes(d.extraType)) {
-          matchStatsMap[dateStr].runs += d.runs;
-        }
-        if (d.bowler && d.bowler.toString() === playerId && d.wicket && (!d.wicket.type || !['run out'].includes(d.wicket.type))) {
-          matchStatsMap[dateStr].wickets += 1;
-        }
-      }
-    }
-
-    const trends = Object.values(matchStatsMap).sort((a, b) => new Date(a.matchDate) - new Date(b.matchDate));
-    
-    // Grab career stats to pass along
-    const careerStats = await PlayerStats.findOne({ userId: playerId });
-
-    res.json({ trends, careerStats });
-  } catch (error) {
-    res.status(500).json({ message: error.message });
+  if (!(await User.exists({ _id: req.params.id }))) {
+    return res.status(404).json({ message: 'Player not found' });
   }
+
+  const lines = await playerMatchLines(req.params.id);
+  const trends = lines.map((l) => ({
+    matchId: l.matchId,
+    matchDate: toDateString(l.matchDate),
+    runs: l.runs,
+    wickets: l.wickets
+  }));
+  const careerStats = (await PlayerStats.findOne({ userId: req.params.id })) || new PlayerStats({ userId: req.params.id });
+
+  res.json({ trends, careerStats });
 };
 
-// @desc    Update player role (e.g. admin grants scorer role)
+// @desc    Grant or revoke a role (e.g. admin grants scorer role)
 // @route   PATCH /api/players/:id/role
 // @access  Admin Only
 const updatePlayerRole = async (req, res) => {
-  try {
-    const { role } = req.body; // e.g. "scorer"
-    const player = await User.findById(req.params.id);
+  const { role, action } = req.body;
 
-    if (!player) {
-      return res.status(404).json({ message: 'Player not found' });
-    }
-
-    if (!player.roles.includes(role)) {
-      player.roles.push(role);
-      await player.save();
-    }
-
-    res.json({ message: 'Role updated successfully', roles: player.roles });
-  } catch (error) {
-    res.status(500).json({ message: error.message });
+  if (action === 'revoke' && role === 'admin' && req.params.id === req.user.id) {
+    return res.status(400).json({ message: 'You cannot remove your own admin role' });
   }
+
+  const update = action === 'grant' ? { $addToSet: { roles: role } } : { $pull: { roles: role } };
+  const player = await User.findByIdAndUpdate(req.params.id, update, { returnDocument: 'after' }).select('roles');
+  if (!player) {
+    return res.status(404).json({ message: 'Player not found' });
+  }
+
+  res.json({ message: 'Role updated successfully', roles: player.roles });
 };
 
 // @desc    Update player profile
 // @route   PUT /api/players/:id
-// @access  Protected (self only)
+// @access  Protected (self or admin)
 const updatePlayerProfile = async (req, res) => {
+  const { name, nickname, profilePhoto, battingStyle, bowlingStyle, jerseyNumber } = req.body;
+
+  if (req.user.id !== req.params.id && !req.user.roles.includes('admin')) {
+    return res.status(403).json({ message: 'Not authorized to edit this profile' });
+  }
+
+  const player = await User.findById(req.params.id);
+  if (!player) {
+    return res.status(404).json({ message: 'Player not found' });
+  }
+
+  if (profilePhoto !== undefined && profilePhoto !== '' && !allowedPhotoUrl(profilePhoto)) {
+    return res.status(400).json({ message: 'Profile photo must be uploaded through the app' });
+  }
+
+  if (name !== undefined) player.name = name;
+  if (nickname !== undefined) player.nickname = nickname;
+  if (profilePhoto !== undefined) player.profilePhoto = profilePhoto || undefined;
+  if (battingStyle !== undefined) player.battingStyle = battingStyle;
+  if (bowlingStyle !== undefined) player.bowlingStyle = bowlingStyle;
+
+  if (jerseyNumber === '') {
+    player.jerseyNumber = undefined;
+  } else if (jerseyNumber !== undefined && player.jerseyNumber !== jerseyNumber) {
+    if (await User.exists({ jerseyNumber, _id: { $ne: player._id } })) {
+      return res.status(400).json({ message: 'Jersey number is already taken by another player' });
+    }
+    player.jerseyNumber = jerseyNumber;
+  }
+
   try {
-    const { name, nickname, profilePhoto, battingStyle, bowlingStyle, jerseyNumber } = req.body;
-    
-    // Check if user is editing their own profile or is admin
-    if (req.user.id !== req.params.id && !req.user.roles.includes('admin')) {
-      return res.status(403).json({ message: 'Not authorized to edit this profile' });
-    }
-
-    const player = await User.findById(req.params.id);
-    if (!player) {
-      return res.status(404).json({ message: 'Player not found' });
-    }
-
-    player.name = name || player.name;
-    player.nickname = nickname !== undefined ? nickname : player.nickname;
-    player.profilePhoto = profilePhoto !== undefined ? profilePhoto : player.profilePhoto;
-    player.battingStyle = battingStyle !== undefined ? battingStyle : player.battingStyle;
-    player.bowlingStyle = bowlingStyle !== undefined ? bowlingStyle : player.bowlingStyle;
-
-    if (jerseyNumber !== undefined && jerseyNumber !== '') {
-      const jNum = Number(jerseyNumber);
-      if (isNaN(jNum) || jNum < 1 || jNum > 999) {
-        return res.status(400).json({ message: 'Jersey number must be between 1 and 999' });
-      }
-
-      // Validate uniqueness if changing jersey number
-      if (player.jerseyNumber !== jNum) {
-        const existingJersey = await User.findOne({ jerseyNumber: jNum });
-        if (existingJersey) {
-          return res.status(400).json({ message: 'Jersey number is already taken by another player' });
-        }
-      }
-      player.jerseyNumber = jNum;
-    } else if (jerseyNumber === '') {
-      player.jerseyNumber = undefined;
-    }
-
     await player.save();
-    res.json(player);
   } catch (error) {
     if (error.code === 11000) {
       return res.status(400).json({ message: 'Jersey number is already taken by another player' });
     }
-    res.status(500).json({ message: error.message });
+    throw error;
   }
+
+  const updated = await User.findById(player._id).select(User.PUBLIC_FIELDS);
+  res.json(updated);
 };
 
 module.exports = {

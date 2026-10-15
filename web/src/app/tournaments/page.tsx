@@ -3,17 +3,8 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { ChevronLeft, Trophy, Calendar, Users } from 'lucide-react';
-import api from '@/lib/api';
-
-interface Tournament {
-  _id: string;
-  name: string;
-  slug: string;
-  status: string;
-  format: string;
-  startDate: string;
-  teams: any[];
-}
+import api, { errorMessage } from '@/lib/api';
+import type { Tournament } from '@/lib/types';
 
 export default function TournamentsList() {
   const [tournaments, setTournaments] = useState<Tournament[]>([]);
@@ -25,9 +16,8 @@ export default function TournamentsList() {
       try {
         const res = await api.get('/tournaments');
         setTournaments(res.data);
-      } catch (err: any) {
-        setError(err.response?.data?.message || 'Failed to load tournaments');
-        console.error(err);
+      } catch (err) {
+        setError(errorMessage(err, 'Failed to load tournaments'));
       } finally {
         setLoading(false);
       }
@@ -74,7 +64,7 @@ export default function TournamentsList() {
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {tournaments.map((t) => (
-              <Link key={t._id} href={`/tournaments/${t.slug}`} className="glass-panel p-6 hover:bg-white/10 transition-all hover:-translate-y-1 group">
+              <Link key={t._id} href={`/tournaments/${t.publicSlug}`} className="glass-panel p-6 hover:bg-white/10 transition-all hover:-translate-y-1 group">
                 <div className="flex justify-between items-start mb-4">
                   <div className="flex items-center gap-3">
                     <div className="w-12 h-12 rounded-full bg-primary/20 flex items-center justify-center text-primary group-hover:scale-110 transition-transform">
@@ -83,7 +73,7 @@ export default function TournamentsList() {
                     <div>
                       <h2 className="font-bold text-lg text-white">{t.name}</h2>
                       <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-800 text-slate-300 border border-slate-700 capitalize">
-                        {t.status}
+                        {t.status.replace('-', ' ')}
                       </span>
                     </div>
                   </div>

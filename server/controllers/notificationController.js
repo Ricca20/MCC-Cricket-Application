@@ -1,68 +1,81 @@
 const webpush = require('web-push');
 const User = require('../models/User');
 
-// VAPID keys should ideally be in env variables
-// Generating them on the fly for development/MVP purposes if not provided
-const publicVapidKey = process.env.VAPID_PUBLIC_KEY || webpush.generateVAPIDKeys().publicKey;
-const privateVapidKey = process.env.VAPID_PRIVATE_KEY || webpush.generateVAPIDKeys().privateKey;
+const MAX_SUBSCRIPTIONS = 5;
 
-webpush.setVapidDetails('mailto:test@example.com', publicVapidKey, privateVapidKey);
+// Push needs a matching VAPID key pair and a real contact; without them it is off
+const vapidSubject = () => {
+  if (process.env.VAPID_SUBJECT) return process.env.VAPID_SUBJECT;
+  const clientUrl = process.env.CLIENT_URL || '';
+  return clientUrl.startsWith('https://') ? clientUrl.split(',')[0].trim() : null;
+};
+
+const pushEnabled = Boolean(process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY && vapidSubject());
+
+if (pushEnabled) {
+  webpush.setVapidDetails(vapidSubject(), process.env.VAPID_PUBLIC_KEY, process.env.VAPID_PRIVATE_KEY);
+} else {
+  console.warn('Push notifications disabled: set VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY and VAPID_SUBJECT');
+}
+
+// @desc    Public VAPID key for the browser's PushManager
+// @route   GET /api/notifications/vapid-public-key
+// @access  Public
+const getPublicKey = (req, res) => {
+  if (!pushEnabled) return res.status(503).json({ message: 'Push notifications are not configured' });
+  res.json({ publicKey: process.env.VAPID_PUBLIC_KEY });
+};
 
 // @desc    Subscribe to push notifications
 // @route   POST /api/notifications/subscribe
 // @access  Protected
 const subscribe = async (req, res) => {
-  try {
-    const subscription = req.body;
-    const user = await User.findById(req.user.id);
-    
-    if (!user) return res.status(404).json({ message: 'User not found' });
+  if (!pushEnabled) return res.status(503).json({ message: 'Push notifications are not configured' });
 
-    // Save subscription if it doesn't already exist
-    const exists = user.pushSubscriptions.some(sub => sub.endpoint === subscription.endpoint);
-    if (!exists) {
-      user.pushSubscriptions.push(subscription);
-      await user.save();
-    }
+  const subscription = req.body;
+  const user = await User.findById(req.user.id);
+  if (!user) return res.status(404).json({ message: 'User not found' });
 
-    res.status(201).json({ message: 'Subscribed successfully' });
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
+  const others = user.pushSubscriptions.filter((sub) => sub.endpoint !== subscription.endpoint);
+  // Keep the newest few devices only
+  user.pushSubscriptions = [...others, subscription].slice(-MAX_SUBSCRIPTIONS);
+  await user.save();
+
+  res.status(201).json({ message: 'Subscribed successfully' });
 };
 
 // @desc    Send a push notification (Utility for admin or automated triggers)
 // @route   POST /api/notifications/send
 // @access  Admin only
 const sendNotification = async (req, res) => {
-  try {
-    const { userId, title, body } = req.body;
-    
-    let users = [];
-    if (userId) {
-      const user = await User.findById(userId);
-      if (user) users.push(user);
-    } else {
-      // Broadcast to everyone (for match starts, etc.)
-      users = await User.find({ 'pushSubscriptions.0': { $exists: true } });
+  if (!pushEnabled) return res.status(503).json({ message: 'Push notifications are not configured' });
+
+  const { userId, title, body } = req.body;
+  const users = userId
+    ? await User.find({ _id: userId })
+    : await User.find({ 'pushSubscriptions.0': { $exists: true } });
+
+  const payload = JSON.stringify({ title, body });
+  let sent = 0;
+  for (const user of users) {
+    const results = await Promise.allSettled(
+      user.pushSubscriptions.map((sub) => webpush.sendNotification(sub, payload, { TTL: 3600 }))
+    );
+    // Drop subscriptions the push service says are gone
+    const expired = user.pushSubscriptions.filter((sub, i) =>
+      results[i].status === 'rejected' && [404, 410].includes(results[i].reason?.statusCode)
+    ).map((sub) => sub.endpoint);
+    sent += results.filter((r) => r.status === 'fulfilled').length;
+    if (expired.length) {
+      await User.updateOne({ _id: user._id }, { $pull: { pushSubscriptions: { endpoint: { $in: expired } } } });
     }
-
-    const payload = JSON.stringify({ title, body });
-    
-    users.forEach(user => {
-      user.pushSubscriptions.forEach(sub => {
-        webpush.sendNotification(sub, payload).catch(err => console.error('Push error:', err));
-      });
-    });
-
-    res.json({ message: 'Notifications sent' });
-  } catch (error) {
-    res.status(500).json({ message: error.message });
   }
+
+  res.json({ message: 'Notifications sent', sent });
 };
 
 module.exports = {
+  getPublicKey,
   subscribe,
-  sendNotification,
-  publicVapidKey // Export for the route that provides the key to the frontend
+  sendNotification
 };

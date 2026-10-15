@@ -5,47 +5,56 @@ import { useParams } from 'next/navigation';
 import { ChevronLeft, User, TrendingUp, Activity, Edit2, Save, X, Image as ImageIcon, Crosshair, Zap, Shield } from 'lucide-react';
 import Link from 'next/link';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import api from '@/lib/api';
+import api, { errorMessage } from '@/lib/api';
+import { useStoredUser } from '@/lib/hooks';
+import type { MatchHistoryItem, Player, PlayerStats } from '@/lib/types';
+
+type EditForm = Pick<Player, 'name' | 'nickname' | 'profilePhoto' | 'battingStyle' | 'bowlingStyle'> & { jerseyNumber?: number | string };
+
+const toEditForm = (p: Player): EditForm => ({
+  name: p.name,
+  nickname: p.nickname,
+  profilePhoto: p.profilePhoto,
+  battingStyle: p.battingStyle,
+  bowlingStyle: p.bowlingStyle,
+  jerseyNumber: p.jerseyNumber ?? ''
+});
+
+const roleLabel = (roles: string[]) =>
+  roles.includes('admin') ? 'Club Admin' : roles.includes('scorer') ? 'Scorer' : 'Player';
 
 export default function PlayerProfile() {
   const params = useParams();
   const id = params.id as string;
 
-  const [player, setPlayer] = useState<any>(null);
-  const [stats, setStats] = useState<any>(null);
-  const [trends, setTrends] = useState<any[]>([]);
+  const [player, setPlayer] = useState<Player | null>(null);
+  const [stats, setStats] = useState<PlayerStats | null>(null);
+  const [matchHistory, setMatchHistory] = useState<MatchHistoryItem[]>([]);
+  const [trends, setTrends] = useState<{ matchDate: string; runs: number; wickets: number }[]>([]);
   const [error, setError] = useState('');
   
-  const [isOwner, setIsOwner] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
-  const [editForm, setEditForm] = useState<any>({});
+  const [editForm, setEditForm] = useState<EditForm>({ name: '' });
   const [isSaving, setIsSaving] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
 
-  useEffect(() => {
-    // Check ownership
-    const userData = localStorage.getItem('mcc_user');
-    if (userData) {
-      const user = JSON.parse(userData);
-      if (user.id === id || user.roles?.includes('admin')) {
-        setIsOwner(true);
-      }
-    }
+  // Only decides whether to show the edit button; the API enforces it
+  const user = useStoredUser();
+  const isOwner = Boolean(user && (user.id === id || user.roles.includes('admin')));
 
-    // Fetch player profile
+  useEffect(() => {
+    // The profile response is the single source of the stats shown
     api.get(`/players/${id}`).then(res => {
       setPlayer(res.data.player);
-      setEditForm(res.data.player);
-      if (!stats) setStats(res.data.stats);
-    }).catch(err => {
-      console.error(err);
+      setEditForm(toEditForm(res.data.player));
+      setStats(res.data.stats);
+      setMatchHistory(res.data.matchHistory || []);
+    }).catch(() => {
       setError('Player not found or server error');
     });
 
-    // Fetch trends
     api.get(`/players/${id}/trends`).then(res => {
        setTrends(res.data.trends || []);
-       setStats(res.data.careerStats);
     }).catch(err => {
       console.error(err);
     });
@@ -55,15 +64,16 @@ export default function PlayerProfile() {
     setIsSaving(true);
     setError('');
     try {
-      const token = localStorage.getItem('mcc_token');
-      const res = await api.put(`/players/${id}`, editForm, {
-        headers: { Authorization: `Bearer ${token}` }
+      const res = await api.put(`/players/${id}`, {
+        ...editForm,
+        nickname: editForm.nickname || '',
+        profilePhoto: editForm.profilePhoto || '',
+        jerseyNumber: editForm.jerseyNumber === '' ? '' : Number(editForm.jerseyNumber)
       });
       setPlayer(res.data);
       setIsEditing(false);
-    } catch (err: any) {
-      console.error(err);
-      alert(err.response?.data?.message || 'Failed to update profile');
+    } catch (err) {
+      alert(errorMessage(err, 'Failed to update profile'));
     } finally {
       setIsSaving(false);
     }
@@ -73,14 +83,24 @@ export default function PlayerProfile() {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    setIsUploading(true);
-    const formData = new FormData();
-    formData.append('file', file);
-    formData.append('upload_preset', process.env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET || 'mcc_preset');
+    if (file.size > 5 * 1024 * 1024) {
+      alert('Please choose an image under 5 MB.');
+      return;
+    }
 
+    setIsUploading(true);
     try {
-      const cloudName = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME || 'demo';
-      const res = await fetch(`https://api.cloudinary.com/v1_1/${cloudName}/image/upload`, {
+      // The server signs the upload, so no Cloudinary credentials live in the browser
+      const { data: sig } = await api.post('/uploads/signature');
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('api_key', sig.apiKey);
+      formData.append('timestamp', String(sig.timestamp));
+      formData.append('signature', sig.signature);
+      formData.append('folder', sig.folder);
+      formData.append('allowed_formats', sig.allowed_formats);
+
+      const res = await fetch(`https://api.cloudinary.com/v1_1/${sig.cloudName}/image/upload`, {
         method: 'POST',
         body: formData,
       });
@@ -89,11 +109,10 @@ export default function PlayerProfile() {
       if (data.secure_url) {
         setEditForm({ ...editForm, profilePhoto: data.secure_url });
       } else {
-        alert('Failed to upload image to Cloudinary.');
+        alert(data.error?.message || 'Failed to upload image.');
       }
     } catch (err) {
-      console.error('Image upload error:', err);
-      alert('An error occurred while uploading the image.');
+      alert(errorMessage(err, 'An error occurred while uploading the image.'));
     } finally {
       setIsUploading(false);
     }
@@ -128,7 +147,6 @@ export default function PlayerProfile() {
           
           {/* Cover Banner */}
           <div className="h-32 sm:h-48 w-full bg-gradient-to-r from-emerald-600/40 via-slate-800 to-blue-600/40 relative">
-            <div className="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/carbon-fibre.png')] opacity-20 mix-blend-overlay"></div>
             <div className="absolute bottom-0 left-0 w-full h-24 bg-gradient-to-t from-slate-900/90 to-transparent" />
             
             {/* Action Buttons */}
@@ -169,7 +187,7 @@ export default function PlayerProfile() {
                        
                        <input type="file" accept="image/*" className="hidden" onChange={handleImageUpload} disabled={isUploading} />
                     </label>
-                    <p className="text-xs font-medium text-slate-400 mt-4 text-center w-32">Click image to upload via Cloudinary</p>
+                    <p className="text-xs font-medium text-slate-400 mt-4 text-center w-32">Click image to upload (JPG, PNG or WebP)</p>
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-5 flex-1">
@@ -240,13 +258,13 @@ export default function PlayerProfile() {
                     )}
                   </div>
                   
-                  {player.nickname && <p className="text-accent font-semibold mb-4 text-lg">"{player.nickname}"</p>}
+                  {player.nickname && <p className="text-accent font-semibold mb-4 text-lg">&ldquo;{player.nickname}&rdquo;</p>}
                   {!player.nickname && <div className="h-4"></div>}
                   
                   <div className="flex flex-wrap gap-2.5 justify-center sm:justify-start mt-2">
                     <div className="px-4 py-1.5 bg-slate-800/80 border border-slate-700 rounded-full text-sm font-semibold shadow-sm flex items-center gap-1.5">
                       <Shield className="w-4 h-4 text-slate-400" />
-                      {player.role === 'admin' ? 'Club Admin' : (player.playingRole || 'Player')}
+                      {roleLabel(player.roles || [])}
                     </div>
                     {player.battingStyle && (
                       <div className="px-4 py-1.5 bg-primary/10 border border-primary/20 text-primary-dark rounded-full text-sm font-semibold shadow-sm flex items-center gap-1.5">
@@ -274,7 +292,7 @@ export default function PlayerProfile() {
                <Activity className="w-24 h-24 text-blue-500" />
              </div>
              <div className="text-slate-400 text-xs font-bold uppercase tracking-widest mb-2 relative z-10">Matches</div>
-             <div className="text-4xl sm:text-5xl font-black text-white relative z-10">{stats.matchesPlayed || 0}</div>
+             <div className="text-4xl sm:text-5xl font-black text-white relative z-10">{stats.matchesPlayed}</div>
           </div>
           
           <div className="glass-panel p-6 relative overflow-hidden group hover:border-white/20 transition-all border-b-4 border-b-primary bg-slate-900/40">
@@ -282,7 +300,7 @@ export default function PlayerProfile() {
                <TrendingUp className="w-24 h-24 text-primary" />
              </div>
              <div className="text-slate-400 text-xs font-bold uppercase tracking-widest mb-2 relative z-10">Total Runs</div>
-             <div className="text-4xl sm:text-5xl font-black text-primary relative z-10">{stats.totalRuns || 0}</div>
+             <div className="text-4xl sm:text-5xl font-black text-primary relative z-10">{stats.runs}</div>
           </div>
           
           <div className="glass-panel p-6 relative overflow-hidden group hover:border-white/20 transition-all border-b-4 border-b-accent bg-slate-900/40">
@@ -290,7 +308,7 @@ export default function PlayerProfile() {
                <User className="w-24 h-24 text-accent" />
              </div>
              <div className="text-slate-400 text-xs font-bold uppercase tracking-widest mb-2 relative z-10">Wickets</div>
-             <div className="text-4xl sm:text-5xl font-black text-accent relative z-10">{stats.totalWickets || 0}</div>
+             <div className="text-4xl sm:text-5xl font-black text-accent relative z-10">{stats.wickets}</div>
           </div>
           
           <div className="glass-panel p-6 relative overflow-hidden group hover:border-white/20 transition-all border-b-4 border-b-purple-500 bg-slate-900/40">
@@ -299,9 +317,28 @@ export default function PlayerProfile() {
              </div>
              <div className="text-slate-400 text-xs font-bold uppercase tracking-widest mb-2 relative z-10">Strike Rate</div>
              <div className="text-4xl sm:text-5xl font-black text-white relative z-10">
-               {stats.ballsFaced ? ((stats.totalRuns / stats.ballsFaced) * 100).toFixed(1) : '0.0'}
+               {stats.strikeRate.toFixed(1)}
              </div>
           </div>
+        </div>
+
+        {/* Detailed career figures */}
+        <div className="glass-panel p-6 bg-slate-900/40 grid grid-cols-2 sm:grid-cols-4 gap-y-4 gap-x-6 text-sm">
+          {[
+            ['Batting avg', stats.battingAverage === null ? '-' : stats.battingAverage.toFixed(2)],
+            ['High score', stats.highScore],
+            ['50s / 100s', `${stats.fifties} / ${stats.hundreds}`],
+            ['Not outs', stats.notOuts],
+            ['Overs', stats.oversBowled],
+            ['Economy', stats.economy.toFixed(2)],
+            ['Best bowling', stats.bestBowling],
+            ['Ct / RO / St', `${stats.catches} / ${stats.runOuts} / ${stats.stumpings}`]
+          ].map(([label, value]) => (
+            <div key={label as string}>
+              <div className="text-slate-400 text-xs font-bold uppercase tracking-widest">{label}</div>
+              <div className="text-xl font-bold text-white">{value}</div>
+            </div>
+          ))}
         </div>
 
         {/* Form Guide / Trends Chart */}
@@ -338,6 +375,35 @@ export default function PlayerProfile() {
              </div>
           )}
         </div>
+
+        {/* Match History */}
+        {matchHistory.length > 0 && (
+          <div className="glass-panel p-6 sm:p-8 bg-slate-900/40">
+            <h2 className="text-xl sm:text-2xl font-black mb-6">Match History</h2>
+            <div className="space-y-3">
+              {matchHistory.map((m) => {
+                const row = (
+                  <>
+                    <div>
+                      <p className="font-semibold text-white">{m.title}</p>
+                      <p className="text-xs text-slate-400">{m.matchDate}{m.result ? ` · ${m.result}` : ''}</p>
+                    </div>
+                    <div className="text-right text-sm">
+                      {m.batting && <p className="text-primary">{m.batting.runs}{m.batting.out ? '' : '*'} ({m.batting.balls})</p>}
+                      {m.bowling && <p className="text-accent">{m.bowling.wickets}/{m.bowling.runsConceded}</p>}
+                    </div>
+                  </>
+                );
+                const className = "flex justify-between items-center gap-4 bg-slate-800/50 p-4 rounded-xl border border-white/5";
+                return m.publicSlug ? (
+                  <Link key={m.matchId} href={`/live/${m.publicSlug}`} className={`${className} hover:bg-slate-800`}>{row}</Link>
+                ) : (
+                  <div key={m.matchId} className={className}>{row}</div>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
       </div>
     </div>
